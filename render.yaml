@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: feastflow-demo
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: DB_MODE
+        value: mysql
+      - key: MYSQL_SSL
+        value: "true"
+      - key: MYSQL_SSL_REJECT_UNAUTHORIZED
+        value: "true"
+      - key: MYSQL_MAX_ALLOWED_PACKET
+        value: "67108864"
+      - key: JWT_EXPIRES_IN
+        value: 2h
+      - key: SERVE_CLIENT
+        value: "true"
+      - key: JWT_SECRET
+        generateValue: true
