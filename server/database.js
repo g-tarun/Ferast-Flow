@@ -1,13 +1,49 @@
 import mysql from 'mysql2/promise'
 
-const databaseName = process.env.MYSQL_DATABASE || 'feastflow_local'
+const mysqlConnectionUrl = process.env.DATABASE_URL || process.env.MYSQL_URL || ''
+
+const parseMysqlConnectionUrl = (connectionUrl) => {
+  if (!connectionUrl) return {}
+  try {
+    const url = new URL(connectionUrl)
+    const sslValue = url.searchParams.get('ssl') || url.searchParams.get('sslmode')
+    const shouldUseSsl =
+      process.env.MYSQL_SSL === 'true' ||
+      (sslValue && !['false', '0', 'disabled', 'disable'].includes(sslValue.toLowerCase()))
+
+    return {
+      host: url.hostname,
+      port: Number(url.port || 3306),
+      user: decodeURIComponent(url.username || ''),
+      password: decodeURIComponent(url.password || ''),
+      database: decodeURIComponent(url.pathname.replace(/^\//, '')),
+      ...(shouldUseSsl
+        ? {
+            ssl: {
+              rejectUnauthorized: process.env.MYSQL_SSL_REJECT_UNAUTHORIZED !== 'false',
+            },
+          }
+        : {}),
+    }
+  } catch (error) {
+    console.warn(`Ignoring invalid MySQL connection URL: ${error.message}`)
+    return {}
+  }
+}
+
+const parsedMysqlUrl = parseMysqlConnectionUrl(mysqlConnectionUrl)
+const databaseName = parsedMysqlUrl.database || process.env.MYSQL_DATABASE || 'feastflow_local'
+const shouldCreateDatabase =
+  process.env.MYSQL_CREATE_DATABASE === undefined
+    ? !mysqlConnectionUrl || !parsedMysqlUrl.database
+    : process.env.MYSQL_CREATE_DATABASE === 'true'
 
 const mysqlConfig = {
-  host: process.env.MYSQL_HOST || '127.0.0.1',
-  port: Number(process.env.MYSQL_PORT || 3306),
-  user: process.env.MYSQL_USER || 'root',
-  password: process.env.MYSQL_PASSWORD || '',
-  ...(process.env.MYSQL_SSL === 'true'
+  host: parsedMysqlUrl.host || process.env.MYSQL_HOST || '127.0.0.1',
+  port: Number(parsedMysqlUrl.port || process.env.MYSQL_PORT || 3306),
+  user: parsedMysqlUrl.user || process.env.MYSQL_USER || 'root',
+  password: parsedMysqlUrl.password || process.env.MYSQL_PASSWORD || '',
+  ...(process.env.MYSQL_SSL === 'true' || parsedMysqlUrl.ssl
     ? {
         ssl: {
           rejectUnauthorized: process.env.MYSQL_SSL_REJECT_UNAUTHORIZED !== 'false',
@@ -1007,14 +1043,16 @@ export const databaseLabel = () =>
   `${mysqlConfig.user}@${mysqlConfig.host}:${mysqlConfig.port}/${databaseName}`
 
 export async function createDatabaseStore() {
-  const serverConnection = await mysql.createConnection(mysqlConfig)
-  await serverConnection.query(
-    `CREATE DATABASE IF NOT EXISTS \`${databaseName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
-  )
-  await serverConnection.query(`SET GLOBAL max_allowed_packet = ${mysqlMaxAllowedPacket}`).catch((error) => {
-    console.warn(`Could not update MySQL max_allowed_packet: ${error.message}`)
-  })
-  await serverConnection.end()
+  if (shouldCreateDatabase) {
+    const serverConnection = await mysql.createConnection(mysqlConfig)
+    await serverConnection.query(
+      `CREATE DATABASE IF NOT EXISTS \`${databaseName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+    )
+    await serverConnection.query(`SET GLOBAL max_allowed_packet = ${mysqlMaxAllowedPacket}`).catch((error) => {
+      console.warn(`Could not update MySQL max_allowed_packet: ${error.message}`)
+    })
+    await serverConnection.end()
+  }
 
   const pool = mysql.createPool({
     ...mysqlConfig,

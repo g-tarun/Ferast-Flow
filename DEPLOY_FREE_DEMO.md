@@ -11,33 +11,42 @@ Final result: one public Render URL that you can share with users for the demo.
 ## Recommended Free Demo Stack
 
 - App server: Render Free Web Service
-- Database: TiDB Cloud Starter, MySQL-compatible free tier
+- Database: TiDB Cloud Zero for a 30-day throwaway demo, or TiDB Cloud Starter for a longer free database
 - Source hosting: GitHub
 
 This is good for a demo. It is not a production SLA setup.
 
 ## 1. Create Free MySQL-Compatible DB
 
+Fastest demo path:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "https://zero.tidbapi.com/v1beta1/instances" `
+  -ContentType "application/json" `
+  -Body '{"tag":"feastflow-demo"}'
+```
+
+Copy the returned `instance.connectionString`. That is the `DATABASE_URL` for Render.
+
+Longer-lived free path:
+
 1. Create a TiDB Cloud account.
-2. Create a Starter cluster.
-3. Create database/user credentials.
-4. Copy the host, port, username, password, and database name.
+2. Create a Starter instance.
+3. Copy the MySQL connection string from the instance's connection panel.
 
 Use SSL for hosted DB connections:
 
 ```env
 DB_MODE=mysql
-MYSQL_HOST=<tidb-host>
-MYSQL_PORT=4000
-MYSQL_USER=<tidb-user>
-MYSQL_PASSWORD=<tidb-password>
-MYSQL_DATABASE=feastflow_demo
+DATABASE_URL=mysql://<tidb-user>:<tidb-password>@<tidb-host>:<tidb-port>/<tidb-database>
 MYSQL_SSL=true
 MYSQL_SSL_REJECT_UNAUTHORIZED=true
 MYSQL_MAX_ALLOWED_PACKET=67108864
 ```
 
-If your provider gives port `3306`, use that instead. TiDB commonly provides its own port in the connection string.
+If the `DATABASE_URL` has no database path, FeastFlow creates and uses `feastflow_local`. If the Zero database is not claimed in TiDB Cloud, it expires after 30 days.
 
 ## 2. Push Code To GitHub
 
@@ -54,7 +63,9 @@ git push -u origin main
 
 ## 3. Deploy On Render
 
-Create a new Render Web Service from the GitHub repository.
+Recommended path: create a Render Blueprint from this repo. Render reads `render.yaml`, creates the free web service, generates `JWT_SECRET`, and prompts you for `DATABASE_URL`.
+
+Manual path: create a new Render Web Service from the GitHub repository.
 
 Use:
 
@@ -69,11 +80,7 @@ Environment variables:
 
 ```env
 DB_MODE=mysql
-MYSQL_HOST=<tidb-host>
-MYSQL_PORT=<tidb-port>
-MYSQL_USER=<tidb-user>
-MYSQL_PASSWORD=<tidb-password>
-MYSQL_DATABASE=feastflow_demo
+DATABASE_URL=<tidb-connection-string>
 MYSQL_SSL=true
 MYSQL_SSL_REJECT_UNAUTHORIZED=true
 MYSQL_MAX_ALLOWED_PACKET=67108864
