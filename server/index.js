@@ -725,6 +725,10 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
   const role = req.body.role
   const email = String(req.body.email || '').trim().toLowerCase()
   const password = String(req.body.password || '')
+  if (!demoAccounts[role] || !email || !password) {
+    return res.status(400).json({ message: 'Role, email, and password are required' })
+  }
+
   const account = await findAccountForLogin({ role, email })
 
   if (!account || account.password !== password) {

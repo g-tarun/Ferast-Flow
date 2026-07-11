@@ -1104,7 +1104,7 @@ export async function createDatabaseStore() {
           WHERE role = ? AND email = ?
           LIMIT 1
         `,
-        [role, email],
+        [role || null, email || null],
       )
       return userFromRow(rows[0])
     },
