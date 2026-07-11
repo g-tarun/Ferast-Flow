@@ -211,10 +211,10 @@ type ApiAuthResponse = {
   user: AuthUser
 }
 
-const heroImage = '/images/hero-catering.png'
-const weddingImage = '/images/wedding-buffet.png'
-const corporateImage = '/images/corporate-lunch.png'
-const dessertImage = '/images/dessert-station.png'
+const heroImage = 'https://images.unsplash.com/photo-1555244162-803834f70033?auto=format&fit=crop&w=1800&q=80'
+const weddingImage = 'https://images.unsplash.com/photo-1519671482749-fd09be7ccebf?auto=format&fit=crop&w=1600&q=80'
+const corporateImage = 'https://images.unsplash.com/photo-1528605248644-14dd04022da1?auto=format&fit=crop&w=1600&q=80'
+const dessertImage = 'https://images.unsplash.com/photo-1488477181946-6428a0291777?auto=format&fit=crop&w=1600&q=80'
 const applicationFallbackImages = [weddingImage, corporateImage, dessertImage, heroImage]
 const maxUploadBytes = 2_500_000
 const documentUploadAccept = 'image/*,application/pdf'

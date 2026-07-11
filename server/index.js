@@ -98,10 +98,10 @@ const seedAccounts = () =>
   ]
 
 const applicationBannerImages = [
-  '/images/wedding-buffet.png',
-  '/images/corporate-lunch.png',
-  '/images/dessert-station.png',
-  '/images/hero-catering.png',
+  'https://images.unsplash.com/photo-1519671482749-fd09be7ccebf?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1528605248644-14dd04022da1?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1488477181946-6428a0291777?auto=format&fit=crop&w=1600&q=80',
+  'https://images.unsplash.com/photo-1555244162-803834f70033?auto=format&fit=crop&w=1800&q=80',
 ]
 
 const pickApplicationBanner = () => applicationBannerImages[Math.floor(Math.random() * applicationBannerImages.length)]
