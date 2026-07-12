@@ -98,10 +98,10 @@ const seedAccounts = () =>
   ]
 
 const applicationBannerImages = [
-  'https://images.unsplash.com/photo-1519671482749-fd09be7ccebf?auto=format&fit=crop&w=1600&q=80',
-  'https://images.unsplash.com/photo-1528605248644-14dd04022da1?auto=format&fit=crop&w=1600&q=80',
-  'https://images.unsplash.com/photo-1488477181946-6428a0291777?auto=format&fit=crop&w=1600&q=80',
-  'https://images.unsplash.com/photo-1555244162-803834f70033?auto=format&fit=crop&w=1800&q=80',
+  '/images/wedding-buffet.png',
+  '/images/corporate-lunch.png',
+  '/images/dessert-station.png',
+  '/images/hero-catering.png',
 ]
 
 const pickApplicationBanner = () => applicationBannerImages[Math.floor(Math.random() * applicationBannerImages.length)]
@@ -162,6 +162,80 @@ const isMysqlPacketError = (error) => {
     message.includes('packet')
   )
 }
+
+const demoImageAssets = {
+  'wedding-buffet.png': {
+    title: 'Wedding buffet',
+    subtitle: 'Live counters and plated service',
+    palette: ['#1f7a52', '#f5c542', '#b23a2c'],
+  },
+  'corporate-lunch.png': {
+    title: 'Corporate lunch',
+    subtitle: 'Bowls, wraps, salads, beverages',
+    palette: ['#0f6b78', '#88c7b7', '#f0b24a'],
+  },
+  'dessert-station.png': {
+    title: 'Dessert station',
+    subtitle: 'Pastries, fruit tarts, mocktails',
+    palette: ['#8b2f57', '#f4a6b8', '#f4d35e'],
+  },
+  'hero-catering.png': {
+    title: 'FeastFlow catering',
+    subtitle: 'Verified vendors for every event',
+    palette: ['#153f3f', '#24865b', '#f0b24a'],
+  },
+}
+
+const escapeSvgText = (value) =>
+  String(value || '').replace(/[&<>"']/g, (character) => {
+    const replacements = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&apos;',
+    }
+    return replacements[character]
+  })
+
+const createDemoImageSvg = ({ title, subtitle, palette }) => `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" role="img" aria-label="${escapeSvgText(title)}">
+  <defs>
+    <linearGradient id="background" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="${palette[0]}"/>
+      <stop offset="0.58" stop-color="${palette[1]}"/>
+      <stop offset="1" stop-color="${palette[2]}"/>
+    </linearGradient>
+    <radialGradient id="plate" cx="50%" cy="45%" r="58%">
+      <stop offset="0" stop-color="#fff7df"/>
+      <stop offset="0.62" stop-color="#f3d893"/>
+      <stop offset="1" stop-color="#b8792f"/>
+    </radialGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="22" stdDeviation="24" flood-color="#111" flood-opacity="0.24"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="700" fill="url(#background)"/>
+  <circle cx="180" cy="120" r="150" fill="#fff" opacity="0.12"/>
+  <circle cx="1040" cy="140" r="210" fill="#fff" opacity="0.11"/>
+  <circle cx="1000" cy="620" r="260" fill="#111" opacity="0.09"/>
+  <g filter="url(#softShadow)">
+    <ellipse cx="610" cy="360" rx="410" ry="190" fill="#fbf2da"/>
+    <ellipse cx="610" cy="350" rx="365" ry="150" fill="url(#plate)"/>
+    <circle cx="430" cy="315" r="52" fill="#c44732"/>
+    <circle cx="545" cy="300" r="64" fill="#237346"/>
+    <circle cx="675" cy="305" r="54" fill="#f5c542"/>
+    <circle cx="790" cy="325" r="62" fill="#7f2f23"/>
+    <rect x="385" y="380" width="440" height="36" rx="18" fill="#fff5ce"/>
+    <rect x="415" y="430" width="380" height="30" rx="15" fill="#f7d98b"/>
+    <path d="M330 405 C430 360 510 430 615 390 C720 350 835 390 900 360" fill="none" stroke="#6b3f1d" stroke-width="18" stroke-linecap="round" opacity="0.62"/>
+  </g>
+  <g fill="#fff">
+    <text x="74" y="565" font-family="Arial, Helvetica, sans-serif" font-size="54" font-weight="800">${escapeSvgText(title)}</text>
+    <text x="78" y="618" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="600" opacity="0.9">${escapeSvgText(subtitle)}</text>
+  </g>
+</svg>
+`
 
 const applicationVendorIdForUser = (user) => {
   if (user.vendorId && user.vendorId !== 'spice-stem') return user.vendorId
@@ -1209,6 +1283,13 @@ app.get('/api/events', requireAuth, (req, res) => {
   req.on('close', () => {
     eventClients.delete(res)
   })
+})
+
+app.get('/images/:imageName', (req, res, next) => {
+  const image = demoImageAssets[req.params.imageName]
+  if (!image) return next()
+  res.setHeader('Cache-Control', 'public, max-age=86400')
+  res.type('image/svg+xml').send(createDemoImageSvg(image))
 })
 
 if (process.env.SERVE_CLIENT !== 'false') {
