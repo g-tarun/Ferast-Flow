@@ -962,6 +962,11 @@ button:focus-visible {
   background: var(--green-soft);
 }
 
+.doc-upload-row.approved {
+  border-color: rgba(31, 122, 84, 0.42);
+  background: #e3f4ea;
+}
+
 .doc-upload-info,
 .doc-upload-actions,
 .doc-upload-btn {
@@ -992,16 +997,42 @@ button:focus-visible {
   white-space: nowrap;
 }
 
+.doc-upload-info .doc-status-text {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.doc-status-text.approved {
+  color: var(--green);
+  background: rgba(31, 122, 84, 0.12);
+}
+
+.doc-status-text.pending {
+  color: var(--gold);
+  background: var(--gold-soft);
+}
+
+.doc-status-text.rejected {
+  color: var(--danger);
+  background: rgba(189, 47, 47, 0.1);
+}
+
 .doc-upload-info .doc-rejection-reason {
   color: var(--danger);
   white-space: normal;
 }
 
 .doc-upload-actions {
+  flex-wrap: wrap;
   justify-content: flex-end;
 }
 
-.doc-upload-btn {
+.doc-upload-btn,
+.doc-approved-lock {
   position: relative;
   min-height: 36px;
   justify-content: center;
@@ -1012,6 +1043,12 @@ button:focus-visible {
   background: white;
   font-weight: 800;
   cursor: pointer;
+}
+
+.doc-approved-lock {
+  color: var(--green);
+  background: rgba(31, 122, 84, 0.1);
+  cursor: default;
 }
 
 .doc-upload-btn input {
@@ -1479,6 +1516,36 @@ button:focus-visible {
 }
 
 @media (max-width: 780px) {
+  h1 {
+    font-size: 2.25rem;
+  }
+
+  h2 {
+    font-size: 1.2rem;
+  }
+
+  .topbar {
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .brand {
+    min-width: 0;
+  }
+
+  .brand-mark {
+    width: 38px;
+    height: 38px;
+  }
+
+  .session-panel {
+    width: 100%;
+  }
+
+  .session-panel strong {
+    max-width: none;
+  }
+
   .auth-card {
     margin: 14px;
   }
@@ -1523,6 +1590,22 @@ button:focus-visible {
 
   .doc-upload-actions {
     justify-content: flex-start;
+  }
+
+  .doc-upload-actions > *,
+  .doc-upload-btn,
+  .doc-approved-lock,
+  .file-upload {
+    width: 100%;
+  }
+
+  .doc-upload-info small,
+  .docs-list.readonly small {
+    white-space: normal;
+  }
+
+  .banner-preview img {
+    aspect-ratio: 16 / 8;
   }
 
   .vendor-card > img {
@@ -1581,5 +1664,43 @@ button:focus-visible {
 
   .live-summary > span:last-child {
     max-width: 100%;
+  }
+}
+
+@media (max-width: 520px) {
+  .topbar {
+    grid-template-columns: 1fr;
+  }
+
+  .main-nav,
+  .role-switch,
+  .session-panel {
+    width: 100%;
+  }
+
+  .main-nav button,
+  .role-switch button {
+    flex: 1 0 auto;
+  }
+
+  .session-panel {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .session-panel button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .content-grid,
+  .page-section {
+    padding: 14px 10px;
+  }
+
+  .panel,
+  .profile-panel,
+  .booking-summary,
+  .metric-card {
+    padding: 12px;
   }
 }

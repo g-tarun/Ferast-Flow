@@ -218,6 +218,20 @@ const dessertImage = '/images/dessert-station.png'
 const applicationFallbackImages = [weddingImage, corporateImage, dessertImage, heroImage]
 const maxUploadBytes = 2_500_000
 const documentUploadAccept = 'image/*,application/pdf'
+const documentsForApplication = (
+  applicationDocuments?: Partial<Record<ApplicationDocumentKey, UploadedDocument>>,
+  vendorDocuments?: Partial<Record<ApplicationDocumentKey, UploadedDocument>>,
+) => {
+  const documents = { ...(vendorDocuments ?? {}) }
+  for (const [key, document] of Object.entries(applicationDocuments ?? {}) as Array<
+    [ApplicationDocumentKey, UploadedDocument]
+  >) {
+    const savedDocument = vendorDocuments?.[key]
+    const isNewLocalUpload = Boolean(document.dataUrl && (!document.id || document.id !== savedDocument?.id))
+    documents[key] = isNewLocalUpload ? document : savedDocument ?? document
+  }
+  return documents
+}
 const applicationDocumentItems: Array<{
   key: ApplicationDocumentKey
   label: string
@@ -927,6 +941,35 @@ export default function App() {
     .reduce((total, booking) => total + booking.amount, 0)
 
   useEffect(() => {
+    if (role !== 'vendor' || !currentVendor) return
+
+    setApplication((current) => {
+      const documents = documentsForApplication(current.documents, currentVendor.documents)
+      return {
+        ...current,
+        businessName:
+          current.businessName === initialApplication.businessName ? currentVendor.name : current.businessName,
+        cuisine: current.cuisine === initialApplication.cuisine ? currentVendor.cuisine : current.cuisine,
+        pincode: current.pincode === initialApplication.pincode ? currentVendor.pincode : current.pincode,
+        radius: current.radius === initialApplication.radius ? currentVendor.serviceRadius : current.radius,
+        license: current.license === initialApplication.license ? currentVendor.license : current.license,
+        bannerImage: current.bannerImage || currentVendor.image,
+        foodLicense: Boolean(documents.foodLicense),
+        identity: Boolean(documents.identity),
+        insurance: Boolean(documents.insurance),
+        documents,
+      }
+    })
+  }, [
+    role,
+    currentVendor?.id,
+    currentVendor?.image,
+    currentVendor?.license,
+    currentVendor?.status,
+    currentVendor?.documents,
+  ])
+
+  useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [activeSection])
 
@@ -1380,19 +1423,46 @@ export default function App() {
     if (!file) return
     if (!file.type.startsWith('image/')) {
       setError('Upload an image file for the vendor banner.')
+      event.target.value = ''
       return
     }
     if (file.size > maxUploadBytes) {
       setError('Banner image must be under 2.5 MB.')
+      event.target.value = ''
       return
     }
 
     const reader = new FileReader()
-    reader.onload = () => {
-      setApplication((current) => ({ ...current, bannerImage: String(reader.result || '') }))
+    reader.onload = async () => {
+      const bannerImage = String(reader.result || '')
+      setApplication((current) => ({ ...current, bannerImage }))
       setError('')
+      event.target.value = ''
+
+      if (!session?.token || role !== 'vendor' || !currentVendor?.id) {
+        setToast('Banner ready. Submit the application to save it.')
+        return
+      }
+
+      try {
+        const data = await apiRequest<{ vendor: Vendor }>(`/vendors/${currentVendor.id}/banner`, {
+          body: { bannerImage },
+          method: 'PATCH',
+          token: session.token,
+        })
+        setVendors((currentVendors) =>
+          currentVendors.map((vendor) => (vendor.id === data.vendor.id ? data.vendor : vendor)),
+        )
+        setApplication((current) => ({ ...current, bannerImage: data.vendor.image }))
+        setToast('Banner updated.')
+      } catch (apiError) {
+        setError(handleApiFailure(apiError, 'Banner upload failed.'))
+      }
     }
-    reader.onerror = () => setError('Banner image could not be read.')
+    reader.onerror = () => {
+      event.target.value = ''
+      setError('Banner image could not be read.')
+    }
     reader.readAsDataURL(file)
   }
 
@@ -1455,14 +1525,15 @@ export default function App() {
       setError('Business name and license number are required.')
       return
     }
-    if (!application.documents?.foodLicense || !application.documents?.identity) {
+    const effectiveDocuments = documentsForApplication(application.documents, currentVendor?.documents)
+    if (!effectiveDocuments.foodLicense || !effectiveDocuments.identity) {
       setError('Food license and Owner ID uploads are mandatory for review.')
       return
     }
 
     try {
       const data = await apiRequest<{ vendor: Vendor }>('/vendors/application', {
-        body: { application },
+        body: { application: { ...application, documents: effectiveDocuments } },
         token: session?.token,
       })
       setVendors((currentVendors) => {
@@ -1477,10 +1548,11 @@ export default function App() {
         identity: Boolean(data.vendor.documents?.identity),
         insurance: Boolean(data.vendor.documents?.insurance),
         documents: data.vendor.documents ?? current.documents,
+        bannerImage: data.vendor.image,
       }))
       setError('')
       setToast(
-        application.insurance
+        effectiveDocuments.insurance
           ? 'Application submitted for admin review.'
           : 'Application saved. Admin requested the missing insurance document.',
       )
@@ -2532,9 +2604,18 @@ function VendorDashboard({
             </div>
             <div className="docs-list">
               {applicationDocumentItems.map((item) => {
-                const uploadedDocument = application.documents?.[item.key] ?? vendor.documents?.[item.key]
+                const uploadedDocument = documentsForApplication(application.documents, vendor.documents)[item.key]
+                const documentStatus = uploadedDocument?.status ?? 'pending'
+                const isApprovedDocument = documentStatus === 'approved'
+                const canReplaceDocument = !isApprovedDocument
+                const canRemoveDocument = Boolean(uploadedDocument?.dataUrl && !uploadedDocument.id && !isApprovedDocument)
                 return (
-                  <div className={`doc-upload-row ${uploadedDocument ? 'uploaded' : ''}`} key={item.key}>
+                  <div
+                    className={`doc-upload-row ${uploadedDocument ? 'uploaded' : ''} ${
+                      isApprovedDocument ? 'approved' : ''
+                    }`}
+                    key={item.key}
+                  >
                     <div className="doc-upload-info">
                       {uploadedDocument ? (
                         <FileCheck2 size={18} aria-hidden="true" />
@@ -2545,13 +2626,16 @@ function VendorDashboard({
                         <strong>{item.label}</strong>
                         <small>
                           {uploadedDocument
-                            ? `${uploadedDocument.name} - ${
-                                documentStatusMeta[uploadedDocument.status ?? 'pending'].label
-                              }`
+                            ? uploadedDocument.name
                             : item.required
                               ? 'Required PDF, PNG, or JPG'
                               : 'Optional PDF, PNG, or JPG'}
                         </small>
+                        {uploadedDocument && (
+                          <small className={`doc-status-text ${documentStatus}`}>
+                            {documentStatusMeta[documentStatus].label}
+                          </small>
+                        )}
                         {uploadedDocument?.status === 'rejected' && (
                           <small className="doc-rejection-reason">
                             Rejected: {uploadedDocument.rejectionReason || 'Admin requested a corrected document.'}
@@ -2570,7 +2654,7 @@ function VendorDashboard({
                           Preview
                         </button>
                       )}
-                      {uploadedDocument && (
+                      {canRemoveDocument && (
                         <button
                           type="button"
                           className="ghost-btn"
@@ -2580,15 +2664,22 @@ function VendorDashboard({
                           Remove
                         </button>
                       )}
-                      <label className="doc-upload-btn">
-                        <UploadCloud size={15} aria-hidden="true" />
-                        {uploadedDocument ? 'Replace' : 'Upload'}
-                        <input
-                          accept={documentUploadAccept}
-                          type="file"
-                          onChange={(event) => uploadApplicationDocument(item.key, event)}
-                        />
-                      </label>
+                      {canReplaceDocument ? (
+                        <label className="doc-upload-btn">
+                          <UploadCloud size={15} aria-hidden="true" />
+                          {uploadedDocument ? 'Replace' : 'Upload'}
+                          <input
+                            accept={documentUploadAccept}
+                            type="file"
+                            onChange={(event) => uploadApplicationDocument(item.key, event)}
+                          />
+                        </label>
+                      ) : (
+                        <span className="doc-approved-lock">
+                          <CheckCircle2 size={15} aria-hidden="true" />
+                          Approved
+                        </span>
+                      )}
                     </div>
                   </div>
                 )

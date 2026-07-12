@@ -238,7 +238,7 @@ const createDemoImageSvg = ({ title, subtitle, palette }) => `
 `
 
 const applicationVendorIdForUser = (user) => {
-  if (user.vendorId && user.vendorId !== 'spice-stem') return user.vendorId
+  if (user.vendorId) return user.vendorId
   return `application-${String(user.id || user.email || 'vendor')
     .replace(/[^a-z0-9]+/gi, '-')
     .replace(/^-|-$/g, '')
@@ -901,6 +901,7 @@ app.post('/api/vendors/application', requireAuth, asyncHandler(async (req, res) 
   const pincode = String(application.pincode || '').trim() || '560043'
   const license = String(application.license || '').trim()
   const vendorId = applicationVendorIdForUser(req.user)
+  const currentVendor = vendors.find((vendor) => vendor.id === vendorId)
   const uploadedDocuments = Object.fromEntries(
     Object.keys(applicationDocumentItems)
       .map((key) => [
@@ -914,9 +915,13 @@ app.post('/api/vendors/application', requireAuth, asyncHandler(async (req, res) 
       ])
       .filter(([, document]) => Boolean(document)),
   )
-  const foodLicense = Boolean(uploadedDocuments.foodLicense)
-  const identity = Boolean(uploadedDocuments.identity)
-  const insurance = Boolean(uploadedDocuments.insurance)
+  const mergedDocuments = {
+    ...(currentVendor?.documents ?? {}),
+    ...uploadedDocuments,
+  }
+  const foodLicense = Boolean(mergedDocuments.foodLicense)
+  const identity = Boolean(mergedDocuments.identity)
+  const insurance = Boolean(mergedDocuments.insurance)
 
   if (!businessName || !license) {
     return res.status(400).json({ message: 'Business name and license number are required' })
@@ -925,37 +930,63 @@ app.post('/api/vendors/application', requireAuth, asyncHandler(async (req, res) 
     return res.status(400).json({ message: 'Food license and ID proof are mandatory for review' })
   }
 
-  const bannerImage = sanitizeBannerImage(application.bannerImage)
+  const bannerImage = application.bannerImage ? sanitizeBannerImage(application.bannerImage) : currentVendor?.image || pickApplicationBanner()
+  const hasRejectedDocuments = Object.values(mergedDocuments).some((document) => document?.status === 'rejected')
+  const nextStatus =
+    hasRejectedDocuments
+      ? 'needs-info'
+      : currentVendor?.status === 'approved'
+        ? 'approved'
+        : insurance
+          ? 'pending'
+          : 'needs-info'
+  const preservedPackages = currentVendor?.packages?.length
+    ? currentVendor.packages.map((pack) => ({
+        ...pack,
+        image: pack.image === currentVendor.image ? bannerImage : pack.image,
+      }))
+    : []
   const appVendor = {
     id: vendorId,
     name: businessName,
-    owner: req.user.name || 'Vendor',
-    status: insurance ? 'pending' : 'needs-info',
+    owner: currentVendor?.owner || req.user.name || 'Vendor',
+    status: nextStatus,
     cuisine,
     address: `Service base near ${pincode}`,
     pincode,
     coordinates: { latitude: 13.0221, longitude: 77.6408, label: `Service base ${pincode}` },
     serviceRadius: Number(application.radius || 12),
     servicePincodes: [pincode],
-    distanceKm: 0,
-    rating: 0,
-    reviewCount: 0,
-    responseMinutes: 0,
-    minPrice: 500,
-    maxGuests: 250,
+    distanceKm: currentVendor?.distanceKm || 0,
+    rating: currentVendor?.rating || 0,
+    reviewCount: currentVendor?.reviewCount || 0,
+    responseMinutes: currentVendor?.responseMinutes || 0,
+    minPrice: currentVendor?.minPrice || 500,
+    maxGuests: currentVendor?.maxGuests || 250,
     license,
     docs: Object.entries(applicationDocumentItems)
-      .filter(([key]) => Boolean(uploadedDocuments[key]))
+      .filter(([key]) => Boolean(mergedDocuments[key]))
       .map(([, label]) => label),
-    documents: uploadedDocuments,
-    dietary: ['Vegetarian'],
-    eventTypes: ['Corporate', 'House party'],
-    badges: ['Under review'],
+    documents: mergedDocuments,
+    dietary: currentVendor?.dietary?.length ? currentVendor.dietary : ['Vegetarian'],
+    eventTypes: currentVendor?.eventTypes?.length ? currentVendor.eventTypes : ['Corporate', 'House party'],
+    badges:
+      currentVendor?.status === 'approved'
+        ? currentVendor.badges
+        : insurance
+          ? ['Under review']
+          : ['Needs document review'],
     image: bannerImage,
-    payoutDue: 0,
-    availability: [futureDate(18), futureDate(30)],
-    adminNote: insurance ? undefined : 'Insurance document is missing.',
-    packages: [
+    payoutDue: currentVendor?.payoutDue || 0,
+    availability: currentVendor?.availability?.length ? currentVendor.availability : [futureDate(18), futureDate(30)],
+    adminNote: hasRejectedDocuments
+      ? currentVendor?.adminNote || 'A document needs correction.'
+      : insurance
+        ? currentVendor?.adminNote
+        : 'Insurance document is missing.',
+    packages: preservedPackages.length
+      ? preservedPackages
+      : [
       {
         id: `${vendorId}-starter-package`,
         title: 'Starter celebration package',
@@ -999,6 +1030,42 @@ app.post('/api/vendors/application', requireAuth, asyncHandler(async (req, res) 
     vendorId: persistedVendor.id,
   })
   res.status(201).json({ vendor: persistedVendor })
+}))
+
+app.patch('/api/vendors/:vendorId/banner', requireAuth, asyncHandler(async (req, res) => {
+  if (req.user.role !== 'vendor' && req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Vendor or admin role required' })
+  }
+
+  const vendor = vendors.find((item) => item.id === req.params.vendorId)
+  if (!vendor) return res.status(404).json({ message: 'Vendor not found' })
+  if (req.user.role === 'vendor' && req.user.vendorId !== vendor.id) {
+    return res.status(403).json({ message: 'You can only update your own vendor banner' })
+  }
+
+  const requestedImage = String(req.body.bannerImage || '')
+  const isValidBanner =
+    applicationBannerImages.includes(requestedImage) ||
+    (requestedImage.startsWith('data:image/') && requestedImage.length < 3_500_000)
+  if (!isValidBanner) {
+    return res.status(400).json({ message: 'Upload a banner image under 2.5 MB.' })
+  }
+
+  const previousImage = vendor.image
+  const bannerImage = sanitizeBannerImage(requestedImage)
+  vendor.image = bannerImage
+  vendor.packages = vendor.packages.map((pack) => ({
+    ...pack,
+    image: pack.image === previousImage ? bannerImage : pack.image,
+  }))
+
+  await saveState()
+  await reloadStateFromDatabase()
+  const persistedVendor = vendors.find((item) => item.id === vendor.id) || vendor
+  publishEvent('Vendor banner updated', `${persistedVendor.name} refreshed their marketplace banner.`, {
+    vendorId: persistedVendor.id,
+  })
+  res.json({ vendor: persistedVendor })
 }))
 
 app.post('/api/vendors/:vendorId/packages', requireAuth, asyncHandler(async (req, res) => {
