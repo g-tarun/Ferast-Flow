@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url'
 import { createDatabaseStore, databaseLabel, isMysqlEnabled } from './database.js'
 
 const app = express()
+app.set('trust proxy', 1)
 const port = Number(process.env.PORT || process.env.API_PORT || 4000)
 const host = process.env.HOST || (process.env.PORT ? '0.0.0.0' : '127.0.0.1')
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url))
@@ -34,6 +35,13 @@ const vapidPublicKey = String(process.env.VAPID_PUBLIC_KEY || '').trim()
 const vapidPrivateKey = String(process.env.VAPID_PRIVATE_KEY || '').trim()
 const vapidSubject = String(process.env.VAPID_SUBJECT || 'mailto:admin@feastflow.local').trim()
 const pushEnabled = Boolean(vapidPublicKey && vapidPrivateKey)
+const loginRateLimit = Math.min(Math.max(Number(process.env.AUTH_LOGIN_RATE_LIMIT || 40), 10), 200)
+const loginRateWindowMs = Math.min(Math.max(Number(process.env.AUTH_LOGIN_RATE_WINDOW_MS || 5 * 60_000), 60_000), 60 * 60_000)
+const registerRateLimit = Math.min(Math.max(Number(process.env.AUTH_REGISTER_RATE_LIMIT || 12), 3), 80)
+const registerRateWindowMs = Math.min(
+  Math.max(Number(process.env.AUTH_REGISTER_RATE_WINDOW_MS || 15 * 60_000), 60_000),
+  60 * 60_000,
+)
 
 if (pushEnabled) {
   webPush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey)
@@ -76,8 +84,21 @@ const parseBody = (schema, req, res) => {
 }
 
 const authRateLimitBuckets = new Map()
-const rateLimit = ({ scope, limit, windowMs }) => (req, res, next) => {
-  const key = `${scope}:${req.ip || req.socket.remoteAddress || 'unknown'}`
+const requestClientIp = (req) => {
+  const forwardedFor = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+  return req.ip || forwardedFor || req.socket.remoteAddress || 'unknown'
+}
+const requestRateIdentity = (req) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {}
+  const challengeId = typeof body.challengeId === 'string' ? body.challengeId.trim().toLowerCase() : ''
+  if (challengeId) return `challenge:${challengeId}`
+  const role = typeof body.role === 'string' ? body.role.trim().toLowerCase() : 'role'
+  const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
+  return email ? `account:${role}:${email}` : 'anonymous'
+}
+const rateLimit = ({ scope, limit, windowMs, scoped = false }) => (req, res, next) => {
+  const identity = scoped ? requestRateIdentity(req) : 'global'
+  const key = `${scope}:${requestClientIp(req)}:${identity}`
   const now = Date.now()
   const previous = (authRateLimitBuckets.get(key) || []).filter((time) => time > now - windowMs)
   if (previous.length >= limit) {
@@ -1106,7 +1127,12 @@ app.get('/api/health', (_req, res) => {
   })
 })
 
-app.post('/api/auth/login', rateLimit({ scope: 'login', limit: 10, windowMs: 15 * 60_000 }), asyncHandler(async (req, res) => {
+app.post('/api/auth/login', rateLimit({
+  scope: 'login',
+  limit: loginRateLimit,
+  windowMs: loginRateWindowMs,
+  scoped: true,
+}), asyncHandler(async (req, res) => {
   const input = parseBody(loginRequestSchema, req, res)
   if (!input) return
 
@@ -1131,7 +1157,12 @@ app.post('/api/auth/login', rateLimit({ scope: 'login', limit: 10, windowMs: 15 
   res.json({ token: issueToken(user), user })
 }))
 
-app.post('/api/auth/register', rateLimit({ scope: 'register', limit: 5, windowMs: 60 * 60_000 }), asyncHandler(async (req, res) => {
+app.post('/api/auth/register', rateLimit({
+  scope: 'register',
+  limit: registerRateLimit,
+  windowMs: registerRateWindowMs,
+  scoped: true,
+}), asyncHandler(async (req, res) => {
   const input = parseBody(registerRequestSchema, req, res)
   if (!input) return
 
@@ -1174,7 +1205,12 @@ app.post('/api/auth/register', rateLimit({ scope: 'register', limit: 5, windowMs
   res.status(201).json({ token: issueToken(user), user })
 }))
 
-app.post('/api/auth/mfa/verify', rateLimit({ scope: 'mfa-verify', limit: 8, windowMs: 10 * 60_000 }), asyncHandler(async (req, res) => {
+app.post('/api/auth/mfa/verify', rateLimit({
+  scope: 'mfa-verify',
+  limit: 8,
+  windowMs: 10 * 60_000,
+  scoped: true,
+}), asyncHandler(async (req, res) => {
   const input = parseBody(mfaCodeSchema, req, res)
   if (!input) return
   if (!mfaRequired) return res.status(404).json({ message: 'Email MFA is not enabled' })
@@ -1210,7 +1246,12 @@ app.post('/api/auth/mfa/verify', rateLimit({ scope: 'mfa-verify', limit: 8, wind
   res.json({ token: issueToken(user), user })
 }))
 
-app.post('/api/auth/mfa/resend', rateLimit({ scope: 'mfa-resend', limit: 3, windowMs: 10 * 60_000 }), asyncHandler(async (req, res) => {
+app.post('/api/auth/mfa/resend', rateLimit({
+  scope: 'mfa-resend',
+  limit: 3,
+  windowMs: 10 * 60_000,
+  scoped: true,
+}), asyncHandler(async (req, res) => {
   const input = parseBody(mfaResendSchema, req, res)
   if (!input) return
   if (!mfaRequired) return res.status(404).json({ message: 'Email MFA is not enabled' })
