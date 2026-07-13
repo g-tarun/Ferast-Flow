@@ -315,6 +315,24 @@ const createSchema = async (pool) => {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `,
     `
+      CREATE TABLE IF NOT EXISTS mfa_challenges (
+        id VARCHAR(120) PRIMARY KEY,
+        user_id VARCHAR(120) NOT NULL,
+        purpose VARCHAR(32) NOT NULL DEFAULT 'login',
+        code_hash CHAR(64) NOT NULL,
+        status VARCHAR(24) NOT NULL DEFAULT 'pending',
+        attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+        max_attempts TINYINT UNSIGNED NOT NULL DEFAULT 5,
+        expires_at DATETIME NOT NULL,
+        sent_at DATETIME NOT NULL,
+        verified_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        KEY mfa_challenges_user_status_index (user_id, status),
+        KEY mfa_challenges_expiry_index (expires_at),
+        CONSTRAINT mfa_challenges_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `,
+    `
       CREATE TABLE IF NOT EXISTS vendors (
         id VARCHAR(120) PRIMARY KEY,
         name VARCHAR(180) NOT NULL,
@@ -523,6 +541,23 @@ const createSchema = async (pool) => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `,
+    `
+      CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id VARCHAR(120) PRIMARY KEY,
+        user_id VARCHAR(120) NOT NULL,
+        user_role VARCHAR(32) NOT NULL,
+        vendor_id VARCHAR(120) NULL,
+        endpoint TEXT NOT NULL,
+        p256dh TEXT NOT NULL,
+        auth_key TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY push_subscriptions_user_index (user_id),
+        KEY push_subscriptions_role_index (user_role),
+        KEY push_subscriptions_vendor_index (vendor_id),
+        CONSTRAINT push_subscriptions_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `,
   ]
 
   for (const statement of statements) {
@@ -727,6 +762,22 @@ const userFromRow = (user) =>
         name: user.name,
         role: user.role,
         vendorId: user.vendor_id || undefined,
+      }
+    : null
+
+const mfaChallengeFromRow = (challenge) =>
+  challenge
+    ? {
+        id: challenge.id,
+        userId: challenge.user_id,
+        purpose: challenge.purpose,
+        codeHash: challenge.code_hash,
+        status: challenge.status,
+        attempts: asNumber(challenge.attempts),
+        maxAttempts: asNumber(challenge.max_attempts),
+        expiresAt: challenge.expires_at ? new Date(challenge.expires_at).toISOString() : null,
+        sentAt: challenge.sent_at ? new Date(challenge.sent_at).toISOString() : null,
+        verifiedAt: challenge.verified_at ? new Date(challenge.verified_at).toISOString() : null,
       }
     : null
 
@@ -1122,6 +1173,94 @@ export async function createDatabaseStore() {
       return userFromRow(rows[0])
     },
 
+    async createMfaChallenge({ id, userId, purpose, codeHash, expiresAt, maxAttempts }) {
+      const connection = await pool.getConnection()
+      try {
+        await connection.beginTransaction()
+        await connection.execute(
+          `
+            UPDATE mfa_challenges
+            SET status = 'superseded'
+            WHERE user_id = ? AND purpose = ? AND status = 'pending'
+          `,
+          [userId, purpose],
+        )
+        await connection.execute(
+          `
+            INSERT INTO mfa_challenges (
+              id, user_id, purpose, code_hash, status, attempts, max_attempts, expires_at, sent_at
+            )
+            VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+          `,
+          [
+            id,
+            userId,
+            purpose,
+            codeHash,
+            maxAttempts,
+            dateTimeForMysql(expiresAt),
+            dateTimeForMysql(new Date()),
+          ],
+        )
+        await connection.commit()
+      } catch (error) {
+        await connection.rollback()
+        throw error
+      } finally {
+        connection.release()
+      }
+    },
+
+    async getMfaChallengeById(id) {
+      const [rows] = await pool.execute(
+        `
+          SELECT
+            id, user_id, purpose, code_hash, status, attempts, max_attempts,
+            expires_at, sent_at, verified_at
+          FROM mfa_challenges
+          WHERE id = ?
+          LIMIT 1
+        `,
+        [id],
+      )
+      return mfaChallengeFromRow(rows[0])
+    },
+
+    async recordMfaChallengeAttempt(id) {
+      await pool.execute(
+        `
+          UPDATE mfa_challenges
+          SET attempts = attempts + 1
+          WHERE id = ? AND status = 'pending'
+        `,
+        [id],
+      )
+      return this.getMfaChallengeById(id)
+    },
+
+    async verifyMfaChallenge(id) {
+      const [result] = await pool.execute(
+        `
+          UPDATE mfa_challenges
+          SET status = 'verified', verified_at = ?
+          WHERE id = ? AND status = 'pending' AND expires_at > NOW() AND attempts < max_attempts
+        `,
+        [dateTimeForMysql(new Date()), id],
+      )
+      return Boolean(result.affectedRows)
+    },
+
+    async invalidateMfaChallenge(id) {
+      await pool.execute(
+        `
+          UPDATE mfa_challenges
+          SET status = CASE WHEN status = 'pending' THEN 'expired' ELSE status END
+          WHERE id = ?
+        `,
+        [id],
+      )
+    },
+
     async logEvent(event) {
       await pool.execute(
         `
@@ -1197,6 +1336,47 @@ export async function createDatabaseStore() {
         [id],
       )
       return documentFromRow(rows[0])
+    },
+
+    async upsertPushSubscription({ id, userId, userRole, vendorId, endpoint, p256dh, auth }) {
+      await pool.execute(
+        `
+          INSERT INTO push_subscriptions (
+            id, user_id, user_role, vendor_id, endpoint, p256dh, auth_key
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            user_id = VALUES(user_id),
+            user_role = VALUES(user_role),
+            vendor_id = VALUES(vendor_id),
+            endpoint = VALUES(endpoint),
+            p256dh = VALUES(p256dh),
+            auth_key = VALUES(auth_key),
+            updated_at = CURRENT_TIMESTAMP
+        `,
+        [id, userId, userRole, vendorId || null, endpoint, p256dh, auth],
+      )
+    },
+
+    async listPushSubscriptions() {
+      const [rows] = await pool.query(
+        `
+          SELECT id, user_id, user_role, vendor_id, endpoint, p256dh, auth_key
+          FROM push_subscriptions
+        `,
+      )
+      return rows.map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        userRole: row.user_role,
+        vendorId: row.vendor_id,
+        endpoint: row.endpoint,
+        keys: { p256dh: row.p256dh, auth: row.auth_key },
+      }))
+    },
+
+    async deletePushSubscription(id) {
+      await pool.execute('DELETE FROM push_subscriptions WHERE id = ?', [id])
     },
 
     async close() {

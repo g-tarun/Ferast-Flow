@@ -16,6 +16,23 @@ CREATE TABLE IF NOT EXISTS users (
   UNIQUE KEY users_role_email_unique (role, email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS mfa_challenges (
+  id VARCHAR(120) PRIMARY KEY,
+  user_id VARCHAR(120) NOT NULL,
+  purpose VARCHAR(32) NOT NULL DEFAULT 'login',
+  code_hash CHAR(64) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'pending',
+  attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  max_attempts TINYINT UNSIGNED NOT NULL DEFAULT 5,
+  expires_at DATETIME NOT NULL,
+  sent_at DATETIME NOT NULL,
+  verified_at DATETIME NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  KEY mfa_challenges_user_status_index (user_id, status),
+  KEY mfa_challenges_expiry_index (expires_at),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS vendors (
   id VARCHAR(120) PRIMARY KEY,
   name VARCHAR(180) NOT NULL,
@@ -205,4 +222,20 @@ CREATE TABLE IF NOT EXISTS event_log (
   payload JSON NULL,
   event_time VARCHAR(32) NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id VARCHAR(120) PRIMARY KEY,
+  user_id VARCHAR(120) NOT NULL,
+  user_role VARCHAR(32) NOT NULL,
+  vendor_id VARCHAR(120) NULL,
+  endpoint TEXT NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth_key TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY push_subscriptions_user_index (user_id),
+  KEY push_subscriptions_role_index (user_role),
+  KEY push_subscriptions_vendor_index (vendor_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

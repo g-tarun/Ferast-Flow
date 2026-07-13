@@ -4,10 +4,13 @@ import {
   AlertCircle,
   BadgeCheck,
   Bell,
+  BellRing,
   CalendarDays,
   CheckCircle2,
   ChefHat,
+  ChevronRight,
   ClipboardCheck,
+  Clock3,
   CreditCard,
   Download,
   FileCheck2,
@@ -17,17 +20,23 @@ import {
   MapPin,
   MessageCircle,
   PackagePlus,
+  RefreshCw,
   Search,
   Send,
   ShieldCheck,
   SlidersHorizontal,
   Star,
   Store,
+  Trash2,
   UploadCloud,
   UserRound,
   Users,
+  Volume2,
+  VolumeX,
   Wallet,
+  X,
   XCircle,
+  Zap,
 } from 'lucide-react'
 
 type Role = 'customer' | 'vendor' | 'admin'
@@ -206,15 +215,31 @@ type ApiBootstrap = {
   user: AuthUser
 }
 
-type ApiAuthResponse = {
+type ApiAuthenticatedResponse = {
   token: string
   user: AuthUser
 }
 
-const heroImage = '/images/hero-catering.png'
-const weddingImage = '/images/wedding-buffet.png'
-const corporateImage = '/images/corporate-lunch.png'
-const dessertImage = '/images/dessert-station.png'
+type MfaChallenge = {
+  mfaRequired: true
+  challengeId: string
+  delivery: string
+  expiresAt: string
+}
+
+type ApiAuthResponse = ApiAuthenticatedResponse | MfaChallenge
+
+const generatedImageVersion = 'v=20260712-doc-flow'
+const versionedDemoImage = (path: string) => `${path}?${generatedImageVersion}`
+const heroImage = versionedDemoImage('/images/hero-catering.png')
+const weddingImage = versionedDemoImage('/images/wedding-buffet.png')
+const corporateImage = versionedDemoImage('/images/corporate-lunch.png')
+const dessertImage = versionedDemoImage('/images/dessert-station.png')
+const displayImageSrc = (image?: string) => {
+  if (!image) return heroImage
+  if (image.startsWith('/images/') && !image.includes('?')) return versionedDemoImage(image)
+  return image
+}
 const applicationFallbackImages = [weddingImage, corporateImage, dessertImage, heroImage]
 const maxUploadBytes = 2_500_000
 const documentUploadAccept = 'image/*,application/pdf'
@@ -300,17 +325,18 @@ const initialFilters: Filters = {
 }
 
 const initialApplication: VendorApplication = {
-  businessName: 'My Catering Co.',
-  cuisine: 'Regional Indian',
-  pincode: '560043',
-  radius: 18,
-  license: 'FSSAI-APP-2026',
+  businessName: '',
+  cuisine: '',
+  pincode: '',
+  radius: 12,
+  license: '',
   foodLicense: false,
   identity: false,
   insurance: false,
   bannerImage: '',
   documents: {},
 }
+const onboardingDraftLicense = 'PENDING-ONBOARDING'
 
 const vendorStatusMeta: Record<VendorStatus, { label: string; tone: string }> = {
   approved: { label: 'Approved', tone: 'success' },
@@ -356,6 +382,53 @@ function showBrowserNotification(permission: AppNotificationPermission, title: s
   })
 }
 
+let notificationAudioContext: AudioContext | undefined
+
+function prepareNotificationSound() {
+  if (typeof window === 'undefined' || typeof window.AudioContext === 'undefined') return null
+  if (!notificationAudioContext || notificationAudioContext.state === 'closed') {
+    notificationAudioContext = new window.AudioContext()
+  }
+  if (notificationAudioContext.state === 'suspended') {
+    void notificationAudioContext.resume().catch(() => undefined)
+  }
+  return notificationAudioContext
+}
+
+function playNotificationSound() {
+  const audioContext = prepareNotificationSound()
+  if (!audioContext) return
+
+  const playTone = () => {
+    const startTime = audioContext.currentTime
+    const gain = audioContext.createGain()
+    const oscillator = audioContext.createOscillator()
+    oscillator.type = 'sine'
+    oscillator.frequency.setValueAtTime(740, startTime)
+    oscillator.frequency.exponentialRampToValueAtTime(980, startTime + 0.1)
+    gain.gain.setValueAtTime(0.0001, startTime)
+    gain.gain.exponentialRampToValueAtTime(0.07, startTime + 0.012)
+    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.22)
+    oscillator.connect(gain)
+    gain.connect(audioContext.destination)
+    oscillator.start(startTime)
+    oscillator.stop(startTime + 0.24)
+  }
+
+  if (audioContext.state === 'suspended') {
+    void audioContext.resume().then(playTone).catch(() => undefined)
+    return
+  }
+  playTone()
+}
+
+function pushApplicationServerKey(value: string) {
+  const padding = '='.repeat((4 - (value.length % 4)) % 4)
+  const base64 = (value + padding).replaceAll('-', '+').replaceAll('_', '/')
+  const raw = atob(base64)
+  return Uint8Array.from(raw, (character) => character.charCodeAt(0))
+}
+
 function distanceInKm(from: GeoPoint, to: GeoPoint) {
   const earthRadiusKm = 6371
   const degreesToRadians = Math.PI / 180
@@ -395,8 +468,60 @@ function hasRejectedDocument(vendor: Vendor) {
   return Object.values(vendor.documents ?? {}).some((document) => document?.status === 'rejected')
 }
 
+function isVendorOnboardingDraft(vendor: Vendor | undefined | null) {
+  return Boolean(
+    vendor &&
+      vendor.license === onboardingDraftLicense &&
+      Object.keys(vendor.documents ?? {}).length === 0 &&
+      vendor.packages.length === 0,
+  )
+}
+
 function isCustomerVisibleVendor(vendor: Vendor) {
   return vendor.status === 'approved' && !hasRejectedDocument(vendor)
+}
+
+function applicationFromVendor(vendor: Vendor): VendorApplication {
+  const documents = vendor.documents ?? {}
+  const onboardingDraft = isVendorOnboardingDraft(vendor)
+  return {
+    businessName: onboardingDraft ? '' : vendor.name || '',
+    cuisine: vendor.cuisine || '',
+    pincode: vendor.pincode || '',
+    radius: vendor.serviceRadius || initialApplication.radius,
+    license: onboardingDraft ? '' : vendor.license || '',
+    foodLicense: Boolean(documents.foodLicense),
+    identity: Boolean(documents.identity),
+    insurance: Boolean(documents.insurance),
+    bannerImage: vendor.image || '',
+    documents,
+  }
+}
+
+function vendorDocumentCount(vendor: Vendor) {
+  return Object.values(vendor.documents ?? {}).filter(Boolean).length
+}
+
+function vendorIdentityKey(vendor: Vendor) {
+  const name = vendor.name.trim().toLowerCase()
+  const pincode = vendor.pincode.trim().toLowerCase()
+  const cuisine = vendor.cuisine.trim().toLowerCase()
+  if (!name || name === 'complete vendor onboarding' || !pincode) return vendor.id
+  return `${name}|${pincode}|${cuisine}`
+}
+
+function dedupeAdminVendorRecords(vendorRecords: Vendor[]) {
+  const groups = new Map<string, Vendor[]>()
+  vendorRecords.forEach((vendor) => {
+    const key = vendorIdentityKey(vendor)
+    groups.set(key, [...(groups.get(key) ?? []), vendor])
+  })
+
+  return vendorRecords.filter((vendor) => {
+    const sameBusinessVendors = groups.get(vendorIdentityKey(vendor)) ?? []
+    if (sameBusinessVendors.length < 2 || vendorDocumentCount(vendor) > 0) return true
+    return !sameBusinessVendors.some((candidate) => candidate.id !== vendor.id && vendorDocumentCount(candidate) > 0)
+  })
 }
 
 function makeId(prefix: string) {
@@ -494,6 +619,129 @@ async function apiRequest<T>(
 
 function StatusPill({ label, tone }: { label: string; tone: string }) {
   return <span className={`status-pill ${tone}`}>{label}</span>
+}
+
+function notificationInitials(title: string) {
+  const initials = title
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word.charAt(0))
+    .join('')
+    .toUpperCase()
+  return initials || 'FF'
+}
+
+function NotificationDrawer({
+  open,
+  notifications,
+  unreadCount,
+  notificationPermission,
+  pushSubscribed,
+  pushBusy,
+  soundEnabled,
+  onClose,
+  onEnablePush,
+  onToggleSound,
+}: {
+  open: boolean
+  notifications: LiveEvent[]
+  unreadCount: number
+  notificationPermission: AppNotificationPermission
+  pushSubscribed: boolean
+  pushBusy: boolean
+  soundEnabled: boolean
+  onClose: () => void
+  onEnablePush: () => void
+  onToggleSound: () => void
+}) {
+  if (!open) return null
+
+  const browserAlertLabel = pushBusy
+    ? 'Enabling browser alerts...'
+    : pushSubscribed
+      ? 'Browser alerts enabled'
+      : notificationPermission === 'denied'
+        ? 'Browser alerts blocked'
+        : notificationPermission === 'unsupported'
+          ? 'Browser alerts unavailable'
+          : 'Enable browser alerts'
+
+  return (
+    <div className="notification-drawer-backdrop" role="presentation" onMouseDown={onClose}>
+      <aside
+        className="notification-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Notification center"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header className="notification-drawer-header">
+          <div>
+            <p className="eyebrow">Notification center</p>
+            <h2>Updates for you</h2>
+          </div>
+          <button type="button" className="notification-close" onClick={onClose} aria-label="Close notifications">
+            <X size={19} aria-hidden="true" />
+          </button>
+        </header>
+
+        <section className="notification-preferences" aria-label="Notification preferences">
+          <div>
+            <strong>Browser alerts</strong>
+            <span>
+              {pushSubscribed
+                ? 'Push updates will reach this device.'
+                : notificationPermission === 'denied'
+                  ? 'Allow notifications in browser settings to enable them.'
+                  : 'Receive booking, document, payment, and chat updates.'}
+            </span>
+          </div>
+          <button
+            type="button"
+            className={pushSubscribed ? 'notification-setting active' : 'notification-setting'}
+            onClick={onEnablePush}
+            disabled={pushBusy || pushSubscribed || notificationPermission === 'denied' || notificationPermission === 'unsupported'}
+          >
+            {pushSubscribed ? <CheckCircle2 size={16} aria-hidden="true" /> : <BellRing size={16} aria-hidden="true" />}
+            {browserAlertLabel}
+          </button>
+          <button
+            type="button"
+            className={soundEnabled ? 'notification-setting active' : 'notification-setting'}
+            onClick={onToggleSound}
+            aria-pressed={soundEnabled}
+          >
+            {soundEnabled ? <Volume2 size={16} aria-hidden="true" /> : <VolumeX size={16} aria-hidden="true" />}
+            {soundEnabled ? 'Alert sound on' : 'Alert sound off'}
+          </button>
+        </section>
+
+        <div className="notification-list" aria-live="polite">
+          {notifications.length === 0 ? (
+            <p className="notification-empty">New booking, document, payment, and chat updates will appear here.</p>
+          ) : (
+            notifications.map((notification, index) => (
+              <article
+                className={index < unreadCount ? 'notification-item unread' : 'notification-item'}
+                key={notification.id}
+              >
+                <span className="notification-avatar">{notificationInitials(notification.title)}</span>
+                <div className="notification-content">
+                  <div className="notification-item-head">
+                    <strong>{notification.title}</strong>
+                    <time>{notification.time || 'Now'}</time>
+                  </div>
+                  <p>{notification.body}</p>
+                </div>
+                {index < unreadCount && <span className="notification-unread-dot" aria-label="Unread notification" />}
+              </article>
+            ))
+          )}
+        </div>
+      </aside>
+    </div>
+  )
 }
 
 function DocumentPreviewModal({
@@ -597,6 +845,118 @@ function DocumentRejectionModal({
   )
 }
 
+function DocumentReuploadModal({
+  document,
+  reason,
+  setReason,
+  onCancel,
+  onConfirm,
+}: {
+  document: UploadedDocument | null
+  reason: string
+  setReason: (reason: string) => void
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  if (!document) return null
+
+  return (
+    <div className="document-modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <form
+        className="reject-modal"
+        aria-label="Request document reupload"
+        onMouseDown={(event) => event.stopPropagation()}
+        onSubmit={(event) => {
+          event.preventDefault()
+          onConfirm()
+        }}
+      >
+        <div>
+          <p className="eyebrow">Request reupload</p>
+          <h2>{document.documentName || document.name}</h2>
+          <small>{document.name}</small>
+        </div>
+        <p className="admin-note">This opens the upload slot again and sends the vendor your reason.</p>
+        <label>
+          <span>Reason for vendor</span>
+          <textarea
+            autoFocus
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="Example: Please upload a clearer, current document."
+          />
+        </label>
+        <div className="document-modal-actions">
+          <button type="button" className="secondary-btn" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="submit" className="primary-btn">
+            <RefreshCw size={16} aria-hidden="true" />
+            Send reupload request
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function DocumentDeleteModal({
+  document,
+  reason,
+  setReason,
+  onCancel,
+  onConfirm,
+}: {
+  document: UploadedDocument | null
+  reason: string
+  setReason: (reason: string) => void
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  if (!document) return null
+
+  return (
+    <div className="document-modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <form
+        className="reject-modal"
+        aria-label="Delete document"
+        onMouseDown={(event) => event.stopPropagation()}
+        onSubmit={(event) => {
+          event.preventDefault()
+          onConfirm()
+        }}
+      >
+        <div>
+          <p className="eyebrow">Delete document</p>
+          <h2>{document.documentName || document.name}</h2>
+          <small>{document.name}</small>
+        </div>
+        <p className="admin-note">
+          This removes the stored file from the database. Use request reupload when you want the vendor to replace it.
+        </p>
+        <label>
+          <span>Admin note optional</span>
+          <textarea
+            autoFocus
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="Example: Duplicate file removed during verification."
+          />
+        </label>
+        <div className="document-modal-actions">
+          <button type="button" className="secondary-btn" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="submit" className="ghost-btn danger">
+            <Trash2 size={16} aria-hidden="true" />
+            Delete document
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
 function Rating({ value, count }: { value: number; count: number }) {
   return (
     <span className="rating">
@@ -632,6 +992,11 @@ function Metric({
 
 function LoginPage({
   onAuthenticate,
+  mfaChallenge,
+  onVerifyMfa,
+  onResendMfa,
+  onCancelMfa,
+  authBusy,
   authError,
 }: {
   onAuthenticate: (details: {
@@ -641,26 +1006,53 @@ function LoginPage({
     email: string
     password: string
   }) => void
+  mfaChallenge: MfaChallenge | null
+  onVerifyMfa: (code: string) => void
+  onResendMfa: () => void
+  onCancelMfa: () => void
+  authBusy: boolean
   authError: string
 }) {
   const [mode, setMode] = useState<AuthMode>('login')
   const [role, setRole] = useState<Role>('customer')
   const [name, setName] = useState('Demo Customer')
   const [email, setEmail] = useState(demoAccounts.customer.email)
-  const [password, setPassword] = useState(demoAccounts.customer.password)
+  const [password, setPassword] = useState('')
+  const [mfaCode, setMfaCode] = useState('')
+
+  useEffect(() => {
+    setMfaCode('')
+  }, [mfaChallenge?.challengeId])
 
   const selectRole = (nextRole: Role) => {
     setRole(nextRole)
     const account = demoAccounts[nextRole]
     setName(account.name)
     setEmail(account.email)
-    setPassword(account.password)
+    setPassword('')
+  }
+
+  const selectMode = (nextMode: AuthMode) => {
+    setMode(nextMode)
+    if (nextMode === 'register' && role === 'admin') {
+      selectRole('customer')
+      return
+    }
+    setPassword('')
   }
 
   const submitAuth = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     onAuthenticate({ mode, role, name, email, password })
   }
+
+  const submitMfa = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    onVerifyMfa(mfaCode)
+  }
+
+  const availableRoles: Role[] = mode === 'register' ? ['customer', 'vendor'] : ['customer', 'vendor', 'admin']
+  const canSubmit = Boolean(email.trim() && password.trim().length >= 8 && (mode === 'login' || name.trim()))
 
   return (
     <main className="auth-page">
@@ -693,84 +1085,137 @@ function LoginPage({
       </section>
 
       <section className="auth-card" aria-label="Login form">
-        <div className="auth-card-head">
-          <div>
-            <p className="eyebrow">Account</p>
-            <h2>{mode === 'login' ? 'Sign in' : 'Create account'}</h2>
-          </div>
-          <div className="auth-toggle" aria-label="Authentication mode">
-            <button
-              type="button"
-              className={mode === 'login' ? 'active' : ''}
-              onClick={() => setMode('login')}
-            >
-              Login
-            </button>
-            <button
-              type="button"
-              className={mode === 'register' ? 'active' : ''}
-              onClick={() => setMode('register')}
-            >
-              Register
-            </button>
-          </div>
-        </div>
-
-        <div className="role-cards" aria-label="Choose role">
-          {(['customer', 'vendor', 'admin'] as Role[]).map((item) => (
-            <button
-              key={item}
-              className={role === item ? 'selected' : ''}
-              type="button"
-              onClick={() => selectRole(item)}
-            >
-              {item === 'customer' && <UserRound size={18} aria-hidden="true" />}
-              {item === 'vendor' && <Store size={18} aria-hidden="true" />}
-              {item === 'admin' && <ShieldCheck size={18} aria-hidden="true" />}
-              <span>{item}</span>
-            </button>
-          ))}
-        </div>
-
-        <form className="auth-form" onSubmit={submitAuth}>
-          {mode === 'register' && (
+        {mfaChallenge ? (
+          <form className="auth-form auth-mfa-form" onSubmit={submitMfa}>
+            <span className="auth-mfa-mark">
+              <ShieldCheck size={24} aria-hidden="true" />
+            </span>
+            <div>
+              <p className="eyebrow">Step 2 of 2</p>
+              <h2>Check your email</h2>
+              <p className="auth-mfa-copy">
+                We sent a six-digit sign-in code to <strong>{mfaChallenge.delivery}</strong>. It expires shortly.
+              </p>
+            </div>
             <label>
-              <span>Full name</span>
-              <input value={name} onChange={(event) => setName(event.target.value)} />
+              <span>Verification code</span>
+              <input
+                autoComplete="one-time-code"
+                className="mfa-code-input"
+                inputMode="numeric"
+                maxLength={6}
+                pattern="[0-9]{6}"
+                placeholder="000000"
+                value={mfaCode}
+                onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+              />
             </label>
-          )}
-          <label>
-            <span>Email</span>
-            <input
-              autoComplete="email"
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-            />
-          </label>
-          <label>
-            <span>Password</span>
-            <input
-              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-          </label>
 
-          {authError && (
-            <p className="form-error">
-              <AlertCircle size={16} aria-hidden="true" />
-              {authError}
-            </p>
-          )}
+            {authError && (
+              <p className="form-error">
+                <AlertCircle size={16} aria-hidden="true" />
+                {authError}
+              </p>
+            )}
 
-          <button type="submit" className="primary-btn auth-submit">
-            <KeyRound size={16} aria-hidden="true" />
-            {mode === 'login' ? 'Sign in' : 'Create account'}
-          </button>
-        </form>
+            <button type="submit" className="primary-btn auth-submit" disabled={authBusy || mfaCode.length !== 6}>
+              <KeyRound size={16} aria-hidden="true" />
+              {authBusy ? 'Verifying...' : 'Verify and continue'}
+            </button>
+            <div className="auth-mfa-actions">
+              <button type="button" className="ghost-btn" onClick={onResendMfa} disabled={authBusy}>
+                <RefreshCw size={16} aria-hidden="true" />
+                Resend code
+              </button>
+              <button type="button" className="ghost-btn" onClick={onCancelMfa} disabled={authBusy}>
+                Back to sign in
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <div className="auth-card-head">
+              <div>
+                <p className="eyebrow">Account</p>
+                <h2>{mode === 'login' ? 'Sign in' : 'Create account'}</h2>
+              </div>
+              <div className="auth-toggle" aria-label="Authentication mode">
+                <button
+                  type="button"
+                  className={mode === 'login' ? 'active' : ''}
+                  onClick={() => selectMode('login')}
+                >
+                  Login
+                </button>
+                <button
+                  type="button"
+                  className={mode === 'register' ? 'active' : ''}
+                  onClick={() => selectMode('register')}
+                >
+                  Register
+                </button>
+              </div>
+            </div>
 
+            <div className="role-cards" aria-label="Choose role">
+              {availableRoles.map((item) => (
+                <button
+                  key={item}
+                  className={role === item ? 'selected' : ''}
+                  type="button"
+                  onClick={() => selectRole(item)}
+                >
+                  {item === 'customer' && <UserRound size={18} aria-hidden="true" />}
+                  {item === 'vendor' && <Store size={18} aria-hidden="true" />}
+                  {item === 'admin' && <ShieldCheck size={18} aria-hidden="true" />}
+                  <span>{item}</span>
+                </button>
+              ))}
+            </div>
+
+            <form className="auth-form" onSubmit={submitAuth}>
+              {mode === 'register' && (
+                <>
+                  <label>
+                    <span>Full name</span>
+                    <input value={name} onChange={(event) => setName(event.target.value)} />
+                  </label>
+                  <p className="auth-register-note">Administrator accounts are provisioned internally.</p>
+                </>
+              )}
+              <label>
+                <span>Email</span>
+                <input
+                  autoComplete="email"
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>Password</span>
+                <input
+                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+              </label>
+
+              {authError && (
+                <p className="form-error">
+                  <AlertCircle size={16} aria-hidden="true" />
+                  {authError}
+                </p>
+              )}
+
+              <button type="submit" className="primary-btn auth-submit" disabled={authBusy || !canSubmit}>
+                <KeyRound size={16} aria-hidden="true" />
+                {authBusy ? 'Please wait...' : mode === 'login' ? 'Sign in' : 'Create account'}
+              </button>
+            </form>
+          </>
+        )}
       </section>
     </main>
   )
@@ -779,6 +1224,8 @@ function LoginPage({
 export default function App() {
   const [session, setSession] = useState<AuthSession | null>(() => getStoredSession())
   const [authError, setAuthError] = useState('')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [mfaChallenge, setMfaChallenge] = useState<MfaChallenge | null>(null)
   const [backendReady, setBackendReady] = useState(false)
   const [section, setSection] = useState<Section>('marketplace')
   const [vendors, setVendors] = useState<Vendor[]>([])
@@ -801,15 +1248,24 @@ export default function App() {
   const [chatDrafts, setChatDrafts] = useState<Record<string, string>>({})
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({})
   const [newPackage, setNewPackage] = useState({
-    title: 'Seasonal celebration table',
-    price: '680',
-    guests: '35',
-    tag: 'House party',
+    title: '',
+    price: '',
+    guests: '',
+    tag: '',
   })
   const [notificationPermission, setNotificationPermission] = useState<AppNotificationPermission>(() => getNotificationPermission())
+  const [pushSubscribed, setPushSubscribed] = useState(false)
+  const [pushBusy, setPushBusy] = useState(false)
+  const [notificationDrawerOpen, setNotificationDrawerOpen] = useState(false)
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0)
+  const [alertSoundEnabled, setAlertSoundEnabled] = useState(true)
   const [previewDocument, setPreviewDocument] = useState<UploadedDocument | null>(null)
   const [documentRejectionTarget, setDocumentRejectionTarget] = useState<UploadedDocument | null>(null)
   const [documentRejectionReason, setDocumentRejectionReason] = useState('')
+  const [documentReuploadTarget, setDocumentReuploadTarget] = useState<UploadedDocument | null>(null)
+  const [documentReuploadReason, setDocumentReuploadReason] = useState('')
+  const [documentDeleteTarget, setDocumentDeleteTarget] = useState<UploadedDocument | null>(null)
+  const [documentDeleteReason, setDocumentDeleteReason] = useState('')
   const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([
     {
       id: 'live-init',
@@ -832,6 +1288,10 @@ export default function App() {
     setSearchResults(null)
     setApplication(initialApplication)
     setBackendReady(false)
+    setNotificationDrawerOpen(false)
+    setUnreadNotificationCount(0)
+    setMfaChallenge(null)
+    setAuthBusy(false)
     setAuthError(message)
     setToast(message)
   }
@@ -919,13 +1379,12 @@ export default function App() {
     selectedVendor?.packages.find((pack) => pack.id === selectedPackageId) ??
     selectedVendor?.packages[0]
   const currentVendor =
-    vendors.find((vendor) => vendor.id === session?.user.vendorId) ??
-    vendors.find((vendor) =>
-      Object.values(vendor.documents ?? {}).some((document) => document?.uploadedBy === session?.user.id),
-    ) ??
-    vendors.find((vendor) => vendor.id === 'spice-stem') ??
-    vendors[0]
-  const pendingVendors = vendors.filter((vendor) => vendor.status !== 'approved')
+    role === 'vendor'
+      ? vendors.find((vendor) => vendor.id === session?.user.vendorId) ??
+        vendors.find((vendor) =>
+          Object.values(vendor.documents ?? {}).some((document) => document?.uploadedBy === session?.user.id),
+        )
+      : vendors.find((vendor) => vendor.id === session?.user.vendorId)
   const vendorBookings = bookings.filter((booking) => booking.vendorId === currentVendor?.id)
   const customerBookings = bookings
   const selectedAddOns = addOns.filter((item) => bookingDraft.addOns.includes(item.id))
@@ -943,26 +1402,15 @@ export default function App() {
   useEffect(() => {
     if (role !== 'vendor' || !currentVendor) return
 
-    setApplication((current) => {
-      const documents = documentsForApplication(current.documents, currentVendor.documents)
-      return {
-        ...current,
-        businessName:
-          current.businessName === initialApplication.businessName ? currentVendor.name : current.businessName,
-        cuisine: current.cuisine === initialApplication.cuisine ? currentVendor.cuisine : current.cuisine,
-        pincode: current.pincode === initialApplication.pincode ? currentVendor.pincode : current.pincode,
-        radius: current.radius === initialApplication.radius ? currentVendor.serviceRadius : current.radius,
-        license: current.license === initialApplication.license ? currentVendor.license : current.license,
-        bannerImage: current.bannerImage || currentVendor.image,
-        foodLicense: Boolean(documents.foodLicense),
-        identity: Boolean(documents.identity),
-        insurance: Boolean(documents.insurance),
-        documents,
-      }
-    })
+    setApplication(applicationFromVendor(currentVendor))
+    setError('')
   }, [
     role,
     currentVendor?.id,
+    currentVendor?.name,
+    currentVendor?.cuisine,
+    currentVendor?.pincode,
+    currentVendor?.serviceRadius,
     currentVendor?.image,
     currentVendor?.license,
     currentVendor?.status,
@@ -1017,19 +1465,88 @@ export default function App() {
   }, [session?.token])
 
   useEffect(() => {
+    if (!session || activeSection !== 'admin') return
+    let isCurrent = true
+
+    apiRequest<{ vendors: Vendor[]; count: number }>('/admin/vendors', { token: session.token })
+      .then((data) => {
+        if (!isCurrent) return
+        setVendors(data.vendors)
+        setToast(`${data.count} vendor records refreshed from MySQL.`)
+      })
+      .catch((apiError: unknown) => {
+        if (!isCurrent) return
+        setToast(handleApiFailure(apiError, 'Admin review queue could not be refreshed.'))
+      })
+
+    return () => {
+      isCurrent = false
+    }
+  }, [activeSection, session?.token])
+
+  useEffect(() => {
+    if (!session) return
+    let isCurrent = true
+
+    apiRequest<{ notifications: LiveEvent[] }>('/notifications', { token: session.token })
+      .then((data) => {
+        if (!isCurrent) return
+        setLiveEvents((currentEvents) => {
+          const initialEvent = currentEvents.filter((event) => event.id === 'live-init')
+          const seenIds = new Set(initialEvent.map((event) => event.id))
+          const persisted = data.notifications.filter((event) => {
+            if (seenIds.has(event.id)) return false
+            seenIds.add(event.id)
+            return true
+          })
+          return [...persisted, ...initialEvent].slice(0, 20)
+        })
+        setUnreadNotificationCount(Math.min(data.notifications.length, 9))
+      })
+      .catch(() => undefined)
+
+    return () => {
+      isCurrent = false
+    }
+  }, [session?.token])
+
+  useEffect(() => {
+    if (!session || notificationPermission !== 'granted' || !('serviceWorker' in navigator)) {
+      setPushSubscribed(false)
+      return
+    }
+
+    navigator.serviceWorker.getRegistration('/').then(async (registration) => {
+      const subscription = await registration?.pushManager.getSubscription()
+      if (!subscription) return
+      await apiRequest('/push/subscribe', {
+        body: { subscription: subscription.toJSON() },
+        token: session.token,
+      })
+      setPushSubscribed(true)
+    }).catch(() => setPushSubscribed(false))
+  }, [notificationPermission, session?.token])
+
+  useEffect(() => {
     if (!session) return
 
     const events = new EventSource(`${apiBaseUrl}/api/events?token=${encodeURIComponent(session.token)}`)
+    events.onopen = () => setBackendReady(true)
     events.addEventListener('marketplace', (event) => {
       const liveEvent = JSON.parse((event as MessageEvent).data) as LiveEvent
+      setBackendReady(true)
       setLiveEvents((currentEvents) => [liveEvent, ...currentEvents].slice(0, 6))
+      if (liveEvent.title !== 'Realtime API connected') {
+        setUnreadNotificationCount((currentCount) => Math.min(currentCount + 1, 9))
+        if (alertSoundEnabled) playNotificationSound()
+      }
     })
     events.onerror = () => {
       setBackendReady(false)
     }
 
     return () => events.close()
-  }, [session?.token])
+  }, [alertSoundEnabled, session?.token])
 
   useEffect(() => {
     if (session && !allowedSections.includes(section)) {
@@ -1073,6 +1590,47 @@ export default function App() {
       setNotificationPermission(permission)
     }
     showBrowserNotification(permission, title, body)
+  }
+
+  const enablePushNotifications = async () => {
+    if (!session || !('serviceWorker' in navigator) || typeof Notification === 'undefined') {
+      setNotificationPermission('unsupported')
+      setToast('This browser does not support push notifications.')
+      return
+    }
+
+    setPushBusy(true)
+    try {
+      const permission = await Notification.requestPermission()
+      setNotificationPermission(permission)
+      if (permission !== 'granted') {
+        setToast('Notification permission was not allowed. You can enable it from browser settings.')
+        return
+      }
+
+      const registration = await navigator.serviceWorker.register('/sw.js')
+      await navigator.serviceWorker.ready
+      const { publicKey } = await apiRequest<{ publicKey: string }>('/push/public-key', {
+        token: session.token,
+      })
+      const existingSubscription = await registration.pushManager.getSubscription()
+      const subscription = existingSubscription ?? await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: pushApplicationServerKey(publicKey),
+      })
+      await apiRequest('/push/subscribe', {
+        body: { subscription: subscription.toJSON() },
+        token: session.token,
+      })
+      setPushSubscribed(true)
+      setToast('Push notifications are enabled on this device.')
+      await apiRequest('/push/test', { method: 'POST', token: session.token })
+    } catch (apiError) {
+      setPushSubscribed(false)
+      setToast(handleApiFailure(apiError, 'Push notifications could not be enabled.'))
+    } finally {
+      setPushBusy(false)
+    }
   }
 
   const runSearch = async (criteria = filters) => {
@@ -1132,6 +1690,22 @@ export default function App() {
     )
   }
 
+  const completeAuthentication = (token: string) => {
+    const nextSession = sessionFromToken(token)
+    if (!nextSession) {
+      setAuthError('Unable to create a secure session.')
+      return false
+    }
+    sessionStorage.setItem(sessionTokenKey, token)
+    setSession(nextSession)
+    setSection(defaultSectionForRole(nextSession.user.role))
+    setMfaChallenge(null)
+    setToast(`Welcome back, ${nextSession.user.name}.`)
+    setAuthError('')
+    setError('')
+    return true
+  }
+
   const handleAuthenticate = async ({
     mode,
     role: requestedRole,
@@ -1150,8 +1724,12 @@ export default function App() {
       setAuthError('Enter a valid email address.')
       return
     }
-    if (password.trim().length < 6) {
-      setAuthError('Password must be at least 6 characters.')
+    if (password.trim().length < 8) {
+      setAuthError('Password must be at least 8 characters.')
+      return
+    }
+    if (mode === 'register' && requestedRole === 'admin') {
+      setAuthError('Administrator accounts are provisioned internally.')
       return
     }
 
@@ -1159,6 +1737,7 @@ export default function App() {
       mode === 'login'
         ? ''
         : name.trim() || trimmedEmail.split('@')[0] || 'FeastFlow User'
+    setAuthBusy(true)
     try {
       const response = await apiRequest<ApiAuthResponse>(
         mode === 'login' ? '/auth/login' : '/auth/register',
@@ -1171,21 +1750,54 @@ export default function App() {
           },
         },
       )
-      const nextSession = sessionFromToken(response.token)
-      if (!nextSession) {
-        setAuthError('Unable to create session token.')
+      if ('mfaRequired' in response) {
+        setMfaChallenge(response)
+        setAuthError('')
         return
       }
-
-      sessionStorage.setItem(sessionTokenKey, response.token)
-      setSession(nextSession)
-      setSection(defaultSectionForRole(requestedRole))
-      setToast(`Welcome back, ${nextSession.user.name}.`)
-      setAuthError('')
-      setError('')
+      completeAuthentication(response.token)
     } catch (apiError) {
       setAuthError(apiError instanceof Error ? apiError.message : 'Authentication failed.')
+    } finally {
+      setAuthBusy(false)
     }
+  }
+
+  const verifyMfa = async (code: string) => {
+    if (!mfaChallenge) return
+    setAuthBusy(true)
+    try {
+      const response = await apiRequest<ApiAuthenticatedResponse>('/auth/mfa/verify', {
+        body: { challengeId: mfaChallenge.challengeId, code },
+      })
+      completeAuthentication(response.token)
+    } catch (apiError) {
+      setAuthError(apiError instanceof Error ? apiError.message : 'Verification failed.')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const resendMfa = async () => {
+    if (!mfaChallenge) return
+    setAuthBusy(true)
+    try {
+      const response = await apiRequest<MfaChallenge>('/auth/mfa/resend', {
+        body: { challengeId: mfaChallenge.challengeId },
+      })
+      setMfaChallenge(response)
+      setAuthError('')
+      setToast(`A new verification code was sent to ${response.delivery}.`)
+    } catch (apiError) {
+      setAuthError(apiError instanceof Error ? apiError.message : 'Could not resend the verification code.')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const cancelMfa = () => {
+    setMfaChallenge(null)
+    setAuthError('')
   }
 
   const logout = () => {
@@ -1196,8 +1808,26 @@ export default function App() {
     setAddOns([])
     setSearchResults(null)
     setApplication(initialApplication)
+    setNotificationDrawerOpen(false)
+    setUnreadNotificationCount(0)
+    setMfaChallenge(null)
+    setAuthBusy(false)
     setAuthError('')
     setToast('Signed out.')
+  }
+
+  const openNotificationDrawer = () => {
+    prepareNotificationSound()
+    setUnreadNotificationCount(0)
+    setNotificationDrawerOpen(true)
+  }
+
+  const toggleAlertSound = () => {
+    setAlertSoundEnabled((soundEnabled) => {
+      const nextSoundEnabled = !soundEnabled
+      if (nextSoundEnabled) playNotificationSound()
+      return nextSoundEnabled
+    })
   }
 
   const chooseVendor = (vendorId: string) => {
@@ -1418,6 +2048,78 @@ export default function App() {
     setDocumentRejectionReason('')
   }
 
+  const requestDocumentReupload = (document: UploadedDocument) => {
+    setDocumentReuploadTarget(document)
+    setDocumentReuploadReason(document.rejectionReason ?? 'Please upload a clearer, current document.')
+  }
+
+  const confirmDocumentReupload = async () => {
+    if (!documentReuploadTarget?.id) return
+    const reason = documentReuploadReason.trim()
+    if (!reason) {
+      setToast('Reupload reason is required.')
+      return
+    }
+
+    try {
+      const data = await apiRequest<{ vendor: Vendor; documentKey: ApplicationDocumentKey }>(`/documents/${documentReuploadTarget.id}/reupload-request`, {
+        body: { reason },
+        method: 'POST',
+        token: session?.token,
+      })
+      setVendors((currentVendors) =>
+        currentVendors.map((vendor) => (vendor.id === data.vendor.id ? data.vendor : vendor)),
+      )
+      setApplication((current) => ({
+        ...current,
+        documents: data.vendor.documents ?? {},
+        foodLicense: Boolean(data.vendor.documents?.foodLicense),
+        identity: Boolean(data.vendor.documents?.identity),
+        insurance: Boolean(data.vendor.documents?.insurance),
+      }))
+      setToast('Reupload request sent. Vendor can upload it again.')
+      await notify('Document reupload requested', `${documentReuploadTarget.documentName || documentReuploadTarget.name} must be uploaded again.`)
+      setDocumentReuploadTarget(null)
+      setDocumentReuploadReason('')
+    } catch (apiError) {
+      setToast(handleApiFailure(apiError, 'Document reupload request failed.'))
+    }
+  }
+
+  const requestDocumentDelete = (document: UploadedDocument) => {
+    setDocumentDeleteTarget(document)
+    setDocumentDeleteReason('')
+  }
+
+  const confirmDocumentDelete = async () => {
+    if (!documentDeleteTarget?.id) return
+
+    try {
+      const reason = documentDeleteReason.trim()
+      const data = await apiRequest<{ vendor: Vendor; documentKey: ApplicationDocumentKey }>(`/documents/${documentDeleteTarget.id}`, {
+        body: reason ? { reason } : {},
+        method: 'DELETE',
+        token: session?.token,
+      })
+      setVendors((currentVendors) =>
+        currentVendors.map((vendor) => (vendor.id === data.vendor.id ? data.vendor : vendor)),
+      )
+      setApplication((current) => ({
+        ...current,
+        documents: data.vendor.documents ?? {},
+        foodLicense: Boolean(data.vendor.documents?.foodLicense),
+        identity: Boolean(data.vendor.documents?.identity),
+        insurance: Boolean(data.vendor.documents?.insurance),
+      }))
+      setToast('Document deleted from the database.')
+      await notify('Document deleted', `${documentDeleteTarget.documentName || documentDeleteTarget.name} was deleted.`)
+      setDocumentDeleteTarget(null)
+      setDocumentDeleteReason('')
+    } catch (apiError) {
+      setToast(handleApiFailure(apiError, 'Document delete failed.'))
+    }
+  }
+
   const uploadApplicationBanner = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -1435,11 +2137,11 @@ export default function App() {
     const reader = new FileReader()
     reader.onload = async () => {
       const bannerImage = String(reader.result || '')
-      setApplication((current) => ({ ...current, bannerImage }))
       setError('')
       event.target.value = ''
 
       if (!session?.token || role !== 'vendor' || !currentVendor?.id) {
+        setApplication((current) => ({ ...current, bannerImage }))
         setToast('Banner ready. Submit the application to save it.')
         return
       }
@@ -1505,18 +2207,6 @@ export default function App() {
     }
     reader.onerror = () => setError('Document could not be read.')
     reader.readAsDataURL(file)
-  }
-
-  const removeApplicationDocument = (key: ApplicationDocumentKey) => {
-    setApplication((current) => {
-      const documents = { ...(current.documents ?? {}) }
-      delete documents[key]
-      return {
-        ...current,
-        [key]: false,
-        documents,
-      }
-    })
   }
 
   const submitApplication = async (event: FormEvent<HTMLFormElement>) => {
@@ -1599,7 +2289,17 @@ export default function App() {
   }
 
   if (!session) {
-    return <LoginPage onAuthenticate={handleAuthenticate} authError={authError} />
+    return (
+      <LoginPage
+        onAuthenticate={handleAuthenticate}
+        mfaChallenge={mfaChallenge}
+        onVerifyMfa={verifyMfa}
+        onResendMfa={resendMfa}
+        onCancelMfa={cancelMfa}
+        authBusy={authBusy}
+        authError={authError}
+      />
+    )
   }
 
   return (
@@ -1658,22 +2358,51 @@ export default function App() {
           )}
         </nav>
 
-        <div className="session-panel" aria-label="Current session">
-          <span className="session-avatar">
-            {role === 'customer' && <UserRound size={16} aria-hidden="true" />}
-            {role === 'vendor' && <Store size={16} aria-hidden="true" />}
-            {role === 'admin' && <ShieldCheck size={16} aria-hidden="true" />}
-          </span>
-          <span>
-            <strong>{session.user.name}</strong>
-            <small>{role} session</small>
-          </span>
-          <button type="button" onClick={logout} title="Logout">
-            <LogOut size={16} aria-hidden="true" />
-            Logout
+        <div className="topbar-actions">
+          <button
+            type="button"
+            className={unreadNotificationCount > 0 ? 'notification-bell has-unread' : 'notification-bell'}
+            onClick={openNotificationDrawer}
+            aria-label={`Open notifications${unreadNotificationCount > 0 ? `, ${unreadNotificationCount} unread` : ''}`}
+            aria-expanded={notificationDrawerOpen}
+          >
+            <Bell size={19} aria-hidden="true" />
+            {unreadNotificationCount > 0 && (
+              <span className="notification-count" aria-hidden="true">
+                {unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}
+              </span>
+            )}
           </button>
+          <div className="session-panel" aria-label="Current session">
+            <span className="session-avatar">
+              {role === 'customer' && <UserRound size={16} aria-hidden="true" />}
+              {role === 'vendor' && <Store size={16} aria-hidden="true" />}
+              {role === 'admin' && <ShieldCheck size={16} aria-hidden="true" />}
+            </span>
+            <span>
+              <strong>{session.user.name}</strong>
+              <small>{role} session</small>
+            </span>
+            <button type="button" onClick={logout} title="Logout">
+              <LogOut size={16} aria-hidden="true" />
+              Logout
+            </button>
+          </div>
         </div>
       </header>
+
+      <NotificationDrawer
+        open={notificationDrawerOpen}
+        notifications={liveEvents}
+        unreadCount={unreadNotificationCount}
+        notificationPermission={notificationPermission}
+        pushSubscribed={pushSubscribed}
+        pushBusy={pushBusy}
+        soundEnabled={alertSoundEnabled}
+        onClose={() => setNotificationDrawerOpen(false)}
+        onEnablePush={enablePushNotifications}
+        onToggleSound={toggleAlertSound}
+      />
 
       <footer className="statusbar" aria-live="polite">
         <div>
@@ -1740,7 +2469,6 @@ export default function App() {
             submitApplication={submitApplication}
             uploadApplicationBanner={uploadApplicationBanner}
             uploadApplicationDocument={uploadApplicationDocument}
-            removeApplicationDocument={removeApplicationDocument}
             previewApplicationDocument={setPreviewDocument}
             newPackage={newPackage}
             setNewPackage={setNewPackage}
@@ -1758,11 +2486,12 @@ export default function App() {
         {activeSection === 'admin' && role === 'admin' && (
           <AdminPanel
             vendors={vendors}
-            pendingVendors={pendingVendors}
             bookings={bookings}
             updateVendorStatus={updateVendorStatus}
             updateDocumentStatus={updateDocumentStatus}
             requestDocumentRejection={requestDocumentRejection}
+            requestDocumentReupload={requestDocumentReupload}
+            requestDocumentDelete={requestDocumentDelete}
             previewDocument={setPreviewDocument}
           />
         )}
@@ -1782,6 +2511,26 @@ export default function App() {
           setDocumentRejectionReason('')
         }}
         onConfirm={confirmDocumentRejection}
+      />
+      <DocumentReuploadModal
+        document={documentReuploadTarget}
+        reason={documentReuploadReason}
+        setReason={setDocumentReuploadReason}
+        onCancel={() => {
+          setDocumentReuploadTarget(null)
+          setDocumentReuploadReason('')
+        }}
+        onConfirm={confirmDocumentReupload}
+      />
+      <DocumentDeleteModal
+        document={documentDeleteTarget}
+        reason={documentDeleteReason}
+        setReason={setDocumentDeleteReason}
+        onCancel={() => {
+          setDocumentDeleteTarget(null)
+          setDocumentDeleteReason('')
+        }}
+        onConfirm={confirmDocumentDelete}
       />
     </div>
   )
@@ -1846,6 +2595,19 @@ function CustomerMarketplace({
   toggleAddOn: (id: string) => void
   createBooking: (mode: 'instant' | 'quote') => void
 }) {
+  const openVendor = (vendorId: string) => {
+    chooseVendor(vendorId)
+    if (window.matchMedia('(max-width: 940px)').matches) {
+      window.requestAnimationFrame(() => {
+        const selectedCaterer = document.getElementById('selected-caterer')
+        const topbarHeight = document.querySelector<HTMLElement>('.topbar')?.offsetHeight ?? 92
+        if (!selectedCaterer) return
+        const targetTop = selectedCaterer.getBoundingClientRect().top + window.scrollY - topbarHeight - 12
+        window.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' })
+      })
+    }
+  }
+
   return (
     <>
       <section className="hero-band" style={{ backgroundImage: `url(${heroImage})` }}>
@@ -2003,11 +2765,32 @@ function CustomerMarketplace({
 
           <div className="vendor-list">
             {rankedVendors.map((vendor) => (
-              <article
+              <button
+                type="button"
                 className={`vendor-card ${selectedVendor?.id === vendor.id ? 'selected' : ''}`}
                 key={vendor.id}
+                aria-pressed={selectedVendor?.id === vendor.id}
+                onClick={() => openVendor(vendor.id)}
               >
-                <img src={vendor.image} alt={`${vendor.name} food setup`} />
+                <span className="vendor-card-media">
+                  <img src={displayImageSrc(vendor.image)} alt={`${vendor.name} food setup`} />
+                  <span className="vendor-card-mode">
+                    {vendor.packages.some((pack) => pack.instantBook) ? (
+                      <>
+                        <Zap size={13} aria-hidden="true" /> Instant booking
+                      </>
+                    ) : (
+                      <>
+                        <MessageCircle size={13} aria-hidden="true" /> Custom quote
+                      </>
+                    )}
+                  </span>
+                  {selectedVendor?.id === vendor.id && (
+                    <span className="vendor-selected-mark">
+                      <CheckCircle2 size={15} aria-hidden="true" /> Selected
+                    </span>
+                  )}
+                </span>
                 <div className="vendor-card-body">
                   <div className="vendor-card-top">
                     <div>
@@ -2022,6 +2805,10 @@ function CustomerMarketplace({
                       {getVendorDistance(vendor, appliedFilters.geo)} km
                     </span>
                     <span>
+                      <Clock3 size={15} aria-hidden="true" />
+                      {vendor.responseMinutes} min
+                    </span>
+                    <span>
                       <Wallet size={15} aria-hidden="true" />
                       From {currency.format(vendor.minPrice)}
                     </span>
@@ -2031,16 +2818,16 @@ function CustomerMarketplace({
                     </span>
                   </div>
                   <div className="tag-row">
-                    {vendor.badges.map((badge) => (
+                    {vendor.badges.slice(0, 2).map((badge) => (
                       <span key={badge}>{badge}</span>
                     ))}
                   </div>
-                  <button type="button" className="primary-btn" onClick={() => chooseVendor(vendor.id)}>
-                    <Store size={16} aria-hidden="true" />
-                    View packages
-                  </button>
+                  <span className="vendor-card-action">
+                    View menus and pricing
+                    <ChevronRight size={18} aria-hidden="true" />
+                  </span>
                 </div>
-              </article>
+              </button>
             ))}
             {rankedVendors.length === 0 && (
               <div className="empty-results">
@@ -2052,35 +2839,132 @@ function CustomerMarketplace({
           </div>
         </div>
 
-        <aside className="booking-column">
+        <aside className="booking-column" id="selected-caterer" aria-label="Selected caterer and payment">
           {selectedVendor ? (
-            <>
+            <div className="vendor-detail-stack" key={selectedVendor.id}>
           <section className="profile-panel">
-            <img src={selectedVendor.image} alt={`${selectedVendor.name} catering`} />
-            <div className="profile-body">
-              <div className="vendor-card-top">
-                <div>
-                  <p className="eyebrow">Vendor profile</p>
-                  <h2>{selectedVendor.name}</h2>
+            <div className="storefront-overview">
+              <div className="profile-hero-media">
+                <img src={displayImageSrc(selectedVendor.image)} alt={`${selectedVendor.name} catering`} />
+                <div className="profile-hero-badges">
+                  <span>
+                    <Star size={14} fill="currentColor" aria-hidden="true" />
+                    {selectedVendor.rating > 0 ? selectedVendor.rating.toFixed(1) : 'New'}
+                  </span>
+                  <span>
+                    <BadgeCheck size={14} aria-hidden="true" /> Verified caterer
+                  </span>
                 </div>
-                <StatusPill
-                  label={vendorStatusMeta[selectedVendor.status].label}
-                  tone={vendorStatusMeta[selectedVendor.status].tone}
-                />
               </div>
-              <p>{selectedVendor.address}</p>
-              <div className="quick-facts">
+              <div className="profile-body storefront-summary">
+                <div className="storefront-title-row">
+                  <p className="eyebrow">Selected caterer</p>
+                  <StatusPill
+                    label={vendorStatusMeta[selectedVendor.status].label}
+                    tone={vendorStatusMeta[selectedVendor.status].tone}
+                  />
+                </div>
+                <h2>{selectedVendor.name}</h2>
+                <p className="storefront-cuisine">{selectedVendor.cuisine}</p>
+                <p className="storefront-address">
+                  <MapPin size={16} aria-hidden="true" />
+                  {selectedVendor.address}
+                </p>
+                <div className="storefront-rating-line">
+                  <strong>
+                    <Star size={15} fill="currentColor" aria-hidden="true" />
+                    {selectedVendor.rating > 0 ? selectedVendor.rating.toFixed(1) : 'New'}
+                  </strong>
+                  <span>{selectedVendor.reviewCount} verified reviews</span>
+                </div>
+                <div className="storefront-starting-price">
+                  <span>Menus start from</span>
+                  <strong>{currency.format(selectedVendor.minPrice)} per guest</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="storefront-highlights" aria-label="Caterer booking facts">
+              <div>
+                <Clock3 size={19} aria-hidden="true" />
+                <span>
+                  <strong>{selectedVendor.responseMinutes} min</strong>
+                  Typical response
+                </span>
+              </div>
+              <div>
+                <Users size={19} aria-hidden="true" />
+                <span>
+                  <strong>Up to {selectedVendor.maxGuests}</strong>
+                  Guest capacity
+                </span>
+              </div>
+              <div>
+                <MapPin size={19} aria-hidden="true" />
+                <span>
+                  <strong>{selectedVendor.serviceRadius} km</strong>
+                  Service radius
+                </span>
+              </div>
+            </div>
+
+            {selectedVendor.packages.length > 0 && (
+              <div className="storefront-gallery">
+                <div className="storefront-section-head">
+                  <div>
+                    <p className="eyebrow">Food and setups</p>
+                    <h3>Popular event menus</h3>
+                  </div>
+                  <span>{selectedVendor.packages.length} collections</span>
+                </div>
+                <div className="storefront-gallery-grid">
+                  {selectedVendor.packages.slice(0, 3).map((pack) => (
+                    <button
+                      type="button"
+                      key={pack.id}
+                      onClick={() => setSelectedPackageId(pack.id)}
+                      className={selectedPackage?.id === pack.id ? 'selected' : ''}
+                      aria-label={`Choose ${pack.title}`}
+                    >
+                      <img src={displayImageSrc(pack.image)} alt={`${pack.title} event menu`} />
+                      <span>{pack.title}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="storefront-services">
+              <div>
+                <span className="storefront-service-icon"><ChefHat size={18} aria-hidden="true" /></span>
+                <div>
+                  <strong>Event specialities</strong>
+                  <div className="storefront-tag-list">
+                    {selectedVendor.eventTypes.slice(0, 4).map((eventType) => (
+                      <span key={eventType}>{eventType}</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div>
+                <span className="storefront-service-icon"><ShieldCheck size={18} aria-hidden="true" /></span>
+                <div>
+                  <strong>Food preferences</strong>
+                  <div className="storefront-tag-list dietary">
+                    {selectedVendor.dietary.slice(0, 4).map((preference) => (
+                      <span key={preference}>{preference}</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="storefront-license">
                 <span>
                   <FileCheck2 size={15} aria-hidden="true" />
                   {selectedVendor.license}
                 </span>
                 <span>
-                  <MessageCircle size={15} aria-hidden="true" />
-                  {selectedVendor.responseMinutes} min response
-                </span>
-                <span>
-                  <MapPin size={15} aria-hidden="true" />
-                  {selectedVendor.serviceRadius} km service radius
+                  <BadgeCheck size={15} aria-hidden="true" />
+                  Documents verified
                 </span>
               </div>
             </div>
@@ -2089,9 +2973,10 @@ function CustomerMarketplace({
           <section className="package-picker">
             <div className="section-heading compact">
               <div>
-                <p className="eyebrow">Packages</p>
-                <h2>Menu builder</h2>
+                <p className="eyebrow">Build your event</p>
+                <h2>Choose a package</h2>
               </div>
+              <StatusPill label={`${selectedVendor.packages.length} menus`} tone="notice" />
             </div>
             <div className="package-list">
               {selectedVendor.packages.map((pack) => (
@@ -2101,7 +2986,7 @@ function CustomerMarketplace({
                   type="button"
                   onClick={() => setSelectedPackageId(pack.id)}
                 >
-                  <img src={pack.image} alt={`${pack.title} package`} />
+                  <img src={displayImageSrc(pack.image)} alt={`${pack.title} package`} />
                   <span>
                     <strong>{pack.title}</strong>
                     <small>
@@ -2116,7 +3001,7 @@ function CustomerMarketplace({
             </div>
 
             {selectedPackage && (
-              <div className="checkout">
+              <div className="checkout" key={selectedPackage.id}>
                 <h3>{selectedPackage.title}</h3>
                 <p>{selectedPackage.description}</p>
                 <div className="tag-row">
@@ -2239,7 +3124,7 @@ function CustomerMarketplace({
               </div>
             )}
           </section>
-            </>
+            </div>
           ) : (
             <section className="profile-panel empty-profile">
               <Search size={28} aria-hidden="true" />
@@ -2326,7 +3211,7 @@ function CustomerBookings({
           return (
             <article className="booking-card" key={booking.id}>
               <div className="booking-summary">
-                <img src={pack?.image ?? heroImage} alt={`${pack?.title ?? 'Catering'} booking`} />
+                <img src={displayImageSrc(pack?.image)} alt={`${pack?.title ?? 'Catering'} booking`} />
                 <div>
                   <div className="vendor-card-top">
                     <div>
@@ -2442,7 +3327,6 @@ function VendorDashboard({
   submitApplication,
   uploadApplicationBanner,
   uploadApplicationDocument,
-  removeApplicationDocument,
   previewApplicationDocument,
   newPackage,
   setNewPackage,
@@ -2468,7 +3352,6 @@ function VendorDashboard({
     key: ApplicationDocumentKey,
     event: ChangeEvent<HTMLInputElement>,
   ) => void
-  removeApplicationDocument: (key: ApplicationDocumentKey) => void
   previewApplicationDocument: (document: UploadedDocument) => void
   newPackage: { title: string; price: string; guests: string; tag: string }
   setNewPackage: (
@@ -2496,6 +3379,39 @@ function VendorDashboard({
       booking.status === 'countered' ||
       booking.status === 'accepted',
   )
+  const onboardingDraft = isVendorOnboardingDraft(vendor)
+  const dashboardTitle = onboardingDraft ? 'Complete vendor onboarding' : vendor.name
+  const dashboardStatus = onboardingDraft
+    ? { label: 'Onboarding pending', tone: 'notice' }
+    : vendorStatusMeta[vendor.status]
+  const effectiveDocuments = documentsForApplication(application.documents, vendor.documents)
+  const requiredDocumentsMissing = applicationDocumentItems.some(
+    (item) => item.required && !effectiveDocuments[item.key],
+  )
+  const rejectedDocuments = Object.values(effectiveDocuments).filter(
+    (document) => document?.status === 'rejected',
+  )
+  const missingDocumentCount = applicationDocumentItems.filter((item) => !effectiveDocuments[item.key]).length
+  const adminRequestedAction =
+    vendor.status === 'needs-info' && (requiredDocumentsMissing || rejectedDocuments.length > 0 || missingDocumentCount > 0)
+  const canSubmitApplication = onboardingDraft || vendor.status === 'rejected' || adminRequestedAction
+  const applicationStatusMessage = onboardingDraft
+    ? 'Complete the missing business details and required uploads.'
+    : vendor.status === 'approved'
+      ? 'Application approved. Verified business details and approved documents are locked.'
+      : vendor.status === 'pending'
+        ? 'Application already submitted. Admin review is in progress.'
+        : canSubmitApplication
+          ? 'Admin requested corrected or missing items before the next review.'
+          : 'Application details are saved in the database.'
+  const isApplicationLocked = vendor.status === 'approved' || vendor.status === 'pending'
+  const isBusinessNameLocked =
+    isApplicationLocked || (!onboardingDraft && Boolean(vendor.name.trim()) && vendor.name !== 'Complete vendor onboarding')
+  const isCuisineLocked = isApplicationLocked || (!onboardingDraft && Boolean(vendor.cuisine.trim()))
+  const isPincodeLocked = isApplicationLocked || (!onboardingDraft && Boolean(vendor.pincode.trim()))
+  const isRadiusLocked = isApplicationLocked || (!onboardingDraft && vendor.serviceRadius > 0)
+  const isLicenseLocked =
+    isApplicationLocked || (!onboardingDraft && Boolean(vendor.license.trim()) && vendor.license !== onboardingDraftLicense)
 
   const updateApplication = <Key extends keyof VendorApplication>(
     key: Key,
@@ -2509,12 +3425,12 @@ function VendorDashboard({
       <div className="section-heading">
         <div>
           <p className="eyebrow">Vendor operations</p>
-          <h1>{vendor.name}</h1>
+          <h1>{dashboardTitle}</h1>
         </div>
-        <StatusPill label={vendorStatusMeta[vendor.status].label} tone={vendorStatusMeta[vendor.status].tone} />
+        <StatusPill label={dashboardStatus.label} tone={dashboardStatus.tone} />
       </div>
 
-      <div className="metrics-grid">
+      {!onboardingDraft && <div className="metrics-grid">
         <Metric
           icon={<Wallet size={20} aria-hidden="true" />}
           label="Confirmed revenue"
@@ -2539,9 +3455,9 @@ function VendorDashboard({
           value={`${vendor.serviceRadius} km`}
           detail={vendor.servicePincodes.join(', ')}
         />
-      </div>
+      </div>}
 
-      <div className="operations-grid">
+      <div className={`operations-grid ${onboardingDraft ? 'onboarding-only' : ''}`}>
         <section className="panel">
           <div className="section-heading compact">
             <div>
@@ -2549,11 +3465,23 @@ function VendorDashboard({
               <h2>Vendor application</h2>
             </div>
           </div>
+          {onboardingDraft && (
+            <p className="admin-note">
+              Add your business details and required documents. This profile is stored in the database and is not visible to customers until admin approval.
+            </p>
+          )}
           <form className="stack-form" onSubmit={submitApplication}>
+            {!onboardingDraft && (
+              <div className={`application-state ${canSubmitApplication ? 'needs-action' : 'locked'}`}>
+                <StatusPill label={dashboardStatus.label} tone={dashboardStatus.tone} />
+                <span>{applicationStatusMessage}</span>
+              </div>
+            )}
             <label>
               <span>Business name</span>
               <input
                 value={application.businessName}
+                readOnly={isBusinessNameLocked}
                 onChange={(event) => updateApplication('businessName', event.target.value)}
               />
             </label>
@@ -2561,6 +3489,7 @@ function VendorDashboard({
               <span>Cuisine</span>
               <input
                 value={application.cuisine}
+                readOnly={isCuisineLocked}
                 onChange={(event) => updateApplication('cuisine', event.target.value)}
               />
             </label>
@@ -2569,6 +3498,7 @@ function VendorDashboard({
                 <span>Pincode</span>
                 <input
                   value={application.pincode}
+                  readOnly={isPincodeLocked}
                   onChange={(event) => updateApplication('pincode', event.target.value)}
                 />
               </label>
@@ -2578,6 +3508,7 @@ function VendorDashboard({
                   min={1}
                   type="number"
                   value={application.radius}
+                  readOnly={isRadiusLocked}
                   onChange={(event) => updateApplication('radius', Number(event.target.value))}
                 />
               </label>
@@ -2586,13 +3517,14 @@ function VendorDashboard({
               <span>License number</span>
               <input
                 value={application.license}
+                readOnly={isLicenseLocked}
                 onChange={(event) => updateApplication('license', event.target.value)}
               />
             </label>
             <div className="banner-upload">
               <div className="banner-preview">
                 <img
-                  src={application.bannerImage || applicationFallbackImages[0]}
+                  src={displayImageSrc(application.bannerImage || applicationFallbackImages[0])}
                   alt={`${application.businessName || 'Vendor'} banner preview`}
                 />
               </div>
@@ -2604,11 +3536,10 @@ function VendorDashboard({
             </div>
             <div className="docs-list">
               {applicationDocumentItems.map((item) => {
-                const uploadedDocument = documentsForApplication(application.documents, vendor.documents)[item.key]
+                const uploadedDocument = effectiveDocuments[item.key]
                 const documentStatus = uploadedDocument?.status ?? 'pending'
                 const isApprovedDocument = documentStatus === 'approved'
-                const canReplaceDocument = !isApprovedDocument
-                const canRemoveDocument = Boolean(uploadedDocument?.dataUrl && !uploadedDocument.id && !isApprovedDocument)
+                const canUploadDocument = !uploadedDocument || documentStatus === 'rejected'
                 return (
                   <div
                     className={`doc-upload-row ${uploadedDocument ? 'uploaded' : ''} ${
@@ -2654,17 +3585,7 @@ function VendorDashboard({
                           Preview
                         </button>
                       )}
-                      {canRemoveDocument && (
-                        <button
-                          type="button"
-                          className="ghost-btn"
-                          onClick={() => removeApplicationDocument(item.key)}
-                        >
-                          <XCircle size={15} aria-hidden="true" />
-                          Remove
-                        </button>
-                      )}
-                      {canReplaceDocument ? (
+                      {canUploadDocument ? (
                         <label className="doc-upload-btn">
                           <UploadCloud size={15} aria-hidden="true" />
                           {uploadedDocument ? 'Replace' : 'Upload'}
@@ -2676,8 +3597,12 @@ function VendorDashboard({
                         </label>
                       ) : (
                         <span className="doc-approved-lock">
-                          <CheckCircle2 size={15} aria-hidden="true" />
-                          Approved
+                          {isApprovedDocument ? (
+                            <CheckCircle2 size={15} aria-hidden="true" />
+                          ) : (
+                            <FileCheck2 size={15} aria-hidden="true" />
+                          )}
+                          {documentStatusMeta[documentStatus].label}
                         </span>
                       )}
                     </div>
@@ -2691,14 +3616,16 @@ function VendorDashboard({
                 {error}
               </p>
             )}
-            <button type="submit" className="primary-btn">
-              <ClipboardCheck size={16} aria-hidden="true" />
-              Submit for review
-            </button>
+            {canSubmitApplication && (
+              <button type="submit" className="primary-btn">
+                <ClipboardCheck size={16} aria-hidden="true" />
+                {onboardingDraft ? 'Submit for review' : 'Submit updated review'}
+              </button>
+            )}
           </form>
         </section>
 
-        <section className="panel">
+        {!onboardingDraft && <section className="panel">
           <div className="section-heading compact">
             <div>
               <p className="eyebrow">Menus</p>
@@ -2761,10 +3688,10 @@ function VendorDashboard({
               </div>
             ))}
           </div>
-        </section>
+        </section>}
       </div>
 
-      <section className="panel wide-panel">
+      {!onboardingDraft && <section className="panel wide-panel">
         <div className="section-heading compact">
           <div>
             <p className="eyebrow">Requests</p>
@@ -2826,22 +3753,22 @@ function VendorDashboard({
             )
           })}
         </div>
-      </section>
+      </section>}
     </section>
   )
 }
 
 function AdminPanel({
   vendors,
-  pendingVendors,
   bookings,
   updateVendorStatus,
   updateDocumentStatus,
   requestDocumentRejection,
+  requestDocumentReupload,
+  requestDocumentDelete,
   previewDocument,
 }: {
   vendors: Vendor[]
-  pendingVendors: Vendor[]
   bookings: Booking[]
   updateVendorStatus: (vendorId: string, status: VendorStatus, adminNote?: string) => void
   updateDocumentStatus: (
@@ -2850,17 +3777,54 @@ function AdminPanel({
     rejectionReason?: string,
   ) => void
   requestDocumentRejection: (document: UploadedDocument) => void
+  requestDocumentReupload: (document: UploadedDocument) => void
+  requestDocumentDelete: (document: UploadedDocument) => void
   previewDocument: (document: UploadedDocument) => void
 }) {
+  const [vendorQuery, setVendorQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | VendorStatus>('all')
+  const reviewVendors = useMemo(() => dedupeAdminVendorRecords(vendors), [vendors])
+  const visiblePendingVendors = reviewVendors.filter((vendor) => vendor.status !== 'approved')
   const confirmed = bookings.filter(
     (booking) => booking.status === 'confirmed' || booking.status === 'completed',
   ).length
-  const pendingDocumentChecks = vendors.reduce(
+  const pendingDocumentChecks = reviewVendors.reduce(
     (total, vendor) =>
       total +
       Object.values(vendor.documents ?? {}).filter((document) => document?.status !== 'approved').length,
     0,
   )
+  const filteredVendors = useMemo(() => {
+    const query = vendorQuery.trim().toLowerCase()
+    const reviewPriority: Record<VendorStatus, number> = {
+      pending: 0,
+      'needs-info': 1,
+      rejected: 2,
+      approved: 3,
+    }
+    return reviewVendors
+      .filter((vendor) => {
+        const matchesStatus = statusFilter === 'all' || vendor.status === statusFilter
+        const matchesQuery =
+          !query ||
+          vendorSearchText(vendor).includes(query) ||
+          vendor.license.toLowerCase().includes(query)
+        return matchesStatus && matchesQuery
+      })
+      .sort((first, second) => {
+        const firstOpenDocs = Object.values(first.documents ?? {}).filter(
+          (document) => document?.status !== 'approved',
+        ).length
+        const secondOpenDocs = Object.values(second.documents ?? {}).filter(
+          (document) => document?.status !== 'approved',
+        ).length
+        return (
+          secondOpenDocs - firstOpenDocs ||
+          reviewPriority[first.status] - reviewPriority[second.status] ||
+          first.name.localeCompare(second.name)
+        )
+      })
+  }, [reviewVendors, statusFilter, vendorQuery])
 
   return (
     <section className="page-section">
@@ -2869,15 +3833,15 @@ function AdminPanel({
           <p className="eyebrow">Admin</p>
           <h1>Marketplace control room</h1>
         </div>
-        <StatusPill label={`${pendingVendors.length} checks open`} tone={pendingVendors.length ? 'warning' : 'success'} />
+        <StatusPill label={`${visiblePendingVendors.length} checks open`} tone={visiblePendingVendors.length ? 'warning' : 'success'} />
       </div>
 
       <div className="metrics-grid">
         <Metric
           icon={<Store size={20} aria-hidden="true" />}
           label="Total vendors"
-          value={`${vendors.length}`}
-          detail={`${vendors.filter(isCustomerVisibleVendor).length} customer-visible`}
+          value={`${reviewVendors.length}`}
+          detail={`${reviewVendors.filter(isCustomerVisibleVendor).length} customer-visible`}
         />
         <Metric
           icon={<ClipboardCheck size={20} aria-hidden="true" />}
@@ -2899,19 +3863,56 @@ function AdminPanel({
         />
       </div>
 
-      <div className="admin-grid">
-        {vendors.map((vendor) => {
+      <div className="admin-review-toolbar">
+        <label className="admin-search-field">
+          <Search size={17} aria-hidden="true" />
+          <input
+            type="search"
+            value={vendorQuery}
+            onChange={(event) => setVendorQuery(event.target.value)}
+            placeholder="Search vendor, owner, pincode, cuisine, or license"
+          />
+        </label>
+        <select
+          aria-label="Filter vendors by status"
+          value={statusFilter}
+          onChange={(event) => setStatusFilter(event.target.value as 'all' | VendorStatus)}
+        >
+          <option value="all">All statuses</option>
+          <option value="pending">Pending review</option>
+          <option value="needs-info">Needs info</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        <StatusPill label={`${filteredVendors.length} shown`} tone="neutral" />
+      </div>
+
+      <div className="admin-grid compact">
+        {filteredVendors.map((vendor) => {
           const meta = vendorStatusMeta[vendor.status]
+          const uploadedCount = Object.values(vendor.documents ?? {}).filter(Boolean).length
+          const openDocumentCount = Object.values(vendor.documents ?? {}).filter(
+            (document) => document?.status !== 'approved',
+          ).length
           return (
-            <article className="admin-card" key={vendor.id}>
-              <div className="vendor-card-top">
+            <details className="admin-card admin-review" key={vendor.id}>
+              <summary className="admin-review-summary">
                 <div>
                   <h2>{vendor.name}</h2>
-                  <p>{vendor.owner} · {vendor.cuisine}</p>
+                  <p>{vendor.owner} · {vendor.cuisine || 'Onboarding'} · {vendor.pincode}</p>
                 </div>
-                <StatusPill label={meta.label} tone={meta.tone} />
-              </div>
-              <div className="docs-list readonly">
+                <div className="admin-review-summary-meta">
+                  <span>{uploadedCount} uploaded</span>
+                  {openDocumentCount > 0 && <strong>{openDocumentCount} need review</strong>}
+                  <StatusPill label={meta.label} tone={meta.tone} />
+                </div>
+              </summary>
+              <div className="admin-review-body">
+                <div className="admin-vendor-facts">
+                  <span><FileCheck2 size={15} aria-hidden="true" /> {vendor.license}</span>
+                  <span><MapPin size={15} aria-hidden="true" /> {vendor.address}</span>
+                </div>
+                <div className="docs-list readonly">
                 {applicationDocumentItems.map((item) => {
                   const uploadedDocument = vendor.documents?.[item.key]
                   const isPresent = Boolean(uploadedDocument?.id) || vendor.docs.includes(item.label)
@@ -2964,6 +3965,22 @@ function AdminPanel({
                               Reject doc
                             </button>
                           )}
+                          <button
+                            type="button"
+                            className="secondary-btn doc-reupload-action"
+                            onClick={() => requestDocumentReupload(uploadedDocument)}
+                          >
+                            <RefreshCw size={15} aria-hidden="true" />
+                            Request reupload
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-btn danger"
+                            onClick={() => requestDocumentDelete(uploadedDocument)}
+                          >
+                            <Trash2 size={15} aria-hidden="true" />
+                            Delete doc
+                          </button>
                         </div>
                       )}
                     </div>
@@ -2997,9 +4014,17 @@ function AdminPanel({
                   Reject
                 </button>
               </div>
-            </article>
+              </div>
+            </details>
           )
         })}
+        {filteredVendors.length === 0 && (
+          <div className="empty-results">
+            <Search size={24} aria-hidden="true" />
+            <h3>No vendors match this search</h3>
+            <p>Try a name, pincode, license number, or a different status.</p>
+          </div>
+        )}
       </div>
     </section>
   )

@@ -1,8 +1,13 @@
 import 'dotenv/config'
+import bcrypt from 'bcryptjs'
 import cors from 'cors'
+import crypto from 'crypto'
 import express from 'express'
 import jwt from 'jsonwebtoken'
+import nodemailer from 'nodemailer'
 import path from 'path'
+import webPush from 'web-push'
+import { z } from 'zod'
 import { fileURLToPath } from 'url'
 import { createDatabaseStore, databaseLabel, isMysqlEnabled } from './database.js'
 
@@ -13,12 +18,75 @@ const serverDirectory = path.dirname(fileURLToPath(import.meta.url))
 const clientDistDirectory = path.resolve(serverDirectory, '../dist')
 const jwtSecret = process.env.JWT_SECRET || 'feastflow-local-development-secret'
 const jwtExpiresIn = process.env.JWT_EXPIRES_IN || '2h'
+const mfaCodeSecret = process.env.MFA_CODE_SECRET || jwtSecret
+const mfaRequired = String(process.env.MFA_REQUIRED || 'false').toLowerCase() === 'true'
+const mfaCodeTtlMinutes = Math.min(Math.max(Number(process.env.MFA_CODE_TTL_MINUTES || 10), 5), 30)
+const mfaMaxAttempts = Math.min(Math.max(Number(process.env.MFA_MAX_ATTEMPTS || 5), 3), 8)
+const smtpHost = String(process.env.SMTP_HOST || '').trim()
+const smtpPort = Number(process.env.SMTP_PORT || 465)
+const smtpUser = String(process.env.SMTP_USER || '').trim()
+const smtpPass = String(process.env.SMTP_PASS || '').trim()
+const smtpFrom = String(process.env.SMTP_FROM || smtpUser).trim()
+const smtpSecure = String(process.env.SMTP_SECURE || (smtpPort === 465 ? 'true' : 'false')).toLowerCase() === 'true'
+const emailMfaConfigured = Boolean(smtpHost && smtpUser && smtpPass && smtpFrom)
+let emailTransporter = null
+const vapidPublicKey = String(process.env.VAPID_PUBLIC_KEY || '').trim()
+const vapidPrivateKey = String(process.env.VAPID_PRIVATE_KEY || '').trim()
+const vapidSubject = String(process.env.VAPID_SUBJECT || 'mailto:admin@feastflow.local').trim()
+const pushEnabled = Boolean(vapidPublicKey && vapidPrivateKey)
+
+if (pushEnabled) {
+  webPush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey)
+}
 
 app.use(cors())
 app.use(express.json({ limit: '16mb' }))
 
 const asyncHandler = (handler) => (req, res, next) => {
   Promise.resolve(handler(req, res, next)).catch(next)
+}
+
+const authRoleSchema = z.enum(['customer', 'vendor', 'admin'])
+const accountEmailSchema = z.string().trim().email('Enter a valid email address').max(180)
+const accountPasswordSchema = z.string().min(8, 'Password must be at least 8 characters').max(128)
+const loginRequestSchema = z.object({
+  role: authRoleSchema,
+  email: accountEmailSchema,
+  password: accountPasswordSchema,
+})
+const registerRequestSchema = z.object({
+  role: authRoleSchema,
+  email: accountEmailSchema,
+  password: accountPasswordSchema,
+  name: z.string().trim().min(2, 'Enter your full name').max(160),
+})
+const mfaCodeSchema = z.object({
+  challengeId: z.string().regex(/^MFA-[A-F0-9-]{16,}$/i, 'Invalid verification request').max(120),
+  code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit verification code'),
+})
+const mfaResendSchema = z.object({
+  challengeId: z.string().regex(/^MFA-[A-F0-9-]{16,}$/i, 'Invalid verification request').max(120),
+})
+
+const parseBody = (schema, req, res) => {
+  const result = schema.safeParse(req.body)
+  if (result.success) return result.data
+  res.status(400).json({ message: result.error.issues[0]?.message || 'Invalid request data' })
+  return null
+}
+
+const authRateLimitBuckets = new Map()
+const rateLimit = ({ scope, limit, windowMs }) => (req, res, next) => {
+  const key = `${scope}:${req.ip || req.socket.remoteAddress || 'unknown'}`
+  const now = Date.now()
+  const previous = (authRateLimitBuckets.get(key) || []).filter((time) => time > now - windowMs)
+  if (previous.length >= limit) {
+    res.setHeader('Retry-After', Math.ceil((previous[0] + windowMs - now) / 1000))
+    return res.status(429).json({ message: 'Too many attempts. Please wait and try again.' })
+  }
+  previous.push(now)
+  authRateLimitBuckets.set(key, previous)
+  next()
 }
 
 const futureDate = (days) => {
@@ -110,6 +178,7 @@ const applicationDocumentItems = {
   identity: 'Owner ID',
   insurance: 'Insurance',
 }
+const onboardingDraftLicense = 'PENDING-ONBOARDING'
 
 const sanitizeBannerImage = (bannerImage) => {
   const image = String(bannerImage || '')
@@ -167,22 +236,22 @@ const demoImageAssets = {
   'wedding-buffet.png': {
     title: 'Wedding buffet',
     subtitle: 'Live counters and plated service',
-    palette: ['#1f7a52', '#f5c542', '#b23a2c'],
+    palette: ['#0e4f3a', '#d99a1b', '#8f241d'],
   },
   'corporate-lunch.png': {
     title: 'Corporate lunch',
     subtitle: 'Bowls, wraps, salads, beverages',
-    palette: ['#0f6b78', '#88c7b7', '#f0b24a'],
+    palette: ['#074f5c', '#33a38f', '#d8791f'],
   },
   'dessert-station.png': {
     title: 'Dessert station',
     subtitle: 'Pastries, fruit tarts, mocktails',
-    palette: ['#8b2f57', '#f4a6b8', '#f4d35e'],
+    palette: ['#6e193f', '#d84975', '#d9a018'],
   },
   'hero-catering.png': {
     title: 'FeastFlow catering',
     subtitle: 'Verified vendors for every event',
-    palette: ['#153f3f', '#24865b', '#f0b24a'],
+    palette: ['#0f332f', '#16734d', '#c97818'],
   },
 }
 
@@ -200,10 +269,12 @@ const escapeSvgText = (value) =>
 
 const createDemoImageSvg = ({ title, subtitle, palette }) => `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" role="img" aria-label="${escapeSvgText(title)}">
+  <title>${escapeSvgText(title)}</title>
+  <desc>${escapeSvgText(subtitle)}</desc>
   <defs>
     <linearGradient id="background" x1="0" x2="1" y1="0" y2="1">
       <stop offset="0" stop-color="${palette[0]}"/>
-      <stop offset="0.58" stop-color="${palette[1]}"/>
+      <stop offset="0.48" stop-color="${palette[1]}"/>
       <stop offset="1" stop-color="${palette[2]}"/>
     </linearGradient>
     <radialGradient id="plate" cx="50%" cy="45%" r="58%">
@@ -216,11 +287,13 @@ const createDemoImageSvg = ({ title, subtitle, palette }) => `
     </filter>
   </defs>
   <rect width="1200" height="700" fill="url(#background)"/>
-  <circle cx="180" cy="120" r="150" fill="#fff" opacity="0.12"/>
-  <circle cx="1040" cy="140" r="210" fill="#fff" opacity="0.11"/>
-  <circle cx="1000" cy="620" r="260" fill="#111" opacity="0.09"/>
+  <rect width="1200" height="700" fill="#111" opacity="0.16"/>
+  <circle cx="180" cy="120" r="150" fill="#fff" opacity="0.16"/>
+  <circle cx="1040" cy="140" r="210" fill="#fff" opacity="0.15"/>
+  <circle cx="1000" cy="620" r="260" fill="#111" opacity="0.18"/>
+  <path d="M0 535 C180 455 315 590 520 500 C720 410 900 525 1200 430 L1200 700 L0 700 Z" fill="#1d1108" opacity="0.26"/>
   <g filter="url(#softShadow)">
-    <ellipse cx="610" cy="360" rx="410" ry="190" fill="#fbf2da"/>
+    <ellipse cx="610" cy="360" rx="425" ry="198" fill="#fff3d0"/>
     <ellipse cx="610" cy="350" rx="365" ry="150" fill="url(#plate)"/>
     <circle cx="430" cy="315" r="52" fill="#c44732"/>
     <circle cx="545" cy="300" r="64" fill="#237346"/>
@@ -230,9 +303,13 @@ const createDemoImageSvg = ({ title, subtitle, palette }) => `
     <rect x="415" y="430" width="380" height="30" rx="15" fill="#f7d98b"/>
     <path d="M330 405 C430 360 510 430 615 390 C720 350 835 390 900 360" fill="none" stroke="#6b3f1d" stroke-width="18" stroke-linecap="round" opacity="0.62"/>
   </g>
-  <g fill="#fff">
-    <text x="74" y="565" font-family="Arial, Helvetica, sans-serif" font-size="54" font-weight="800">${escapeSvgText(title)}</text>
-    <text x="78" y="618" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="600" opacity="0.9">${escapeSvgText(subtitle)}</text>
+  <g opacity="0.92">
+    <circle cx="92" cy="598" r="34" fill="#fff3d0"/>
+    <circle cx="92" cy="598" r="20" fill="${palette[1]}"/>
+    <circle cx="178" cy="614" r="24" fill="#fff3d0"/>
+    <circle cx="178" cy="614" r="13" fill="${palette[2]}"/>
+    <path d="M235 606 C320 570 405 630 485 592" fill="none" stroke="#fff3d0" stroke-width="16" stroke-linecap="round" opacity="0.72"/>
+    <path d="M900 590 C975 555 1045 625 1125 585" fill="none" stroke="#fff3d0" stroke-width="14" stroke-linecap="round" opacity="0.68"/>
   </g>
 </svg>
 `
@@ -245,6 +322,36 @@ const applicationVendorIdForUser = (user) => {
     .toLowerCase()
     .slice(0, 72)}`
 }
+
+const createOnboardingDraftVendor = (account) => ({
+  id: account.vendorId,
+  name: 'Complete vendor onboarding',
+  owner: account.name || account.email.split('@')[0] || 'Vendor',
+  status: 'needs-info',
+  cuisine: '',
+  address: '',
+  pincode: '',
+  coordinates: { latitude: 0, longitude: 0, label: 'Onboarding pending' },
+  serviceRadius: 12,
+  servicePincodes: [],
+  distanceKm: 0,
+  rating: 0,
+  reviewCount: 0,
+  responseMinutes: 0,
+  minPrice: 0,
+  maxGuests: 0,
+  license: onboardingDraftLicense,
+  docs: [],
+  documents: {},
+  dietary: [],
+  eventTypes: [],
+  badges: ['Onboarding pending'],
+  image: '',
+  payoutDue: 0,
+  availability: [],
+  adminNote: 'Complete onboarding details and upload required documents.',
+  packages: [],
+})
 
 const seedVendors = () => [
   {
@@ -627,6 +734,129 @@ const findAccountById = async (id) => {
   return accounts.find((item) => item.id === id) || null
 }
 
+const isPasswordHash = (value) => /^\$2[aby]\$\d{2}\$/.test(String(value || ''))
+
+const securePlaintextMatch = (storedPassword, submittedPassword) => {
+  const stored = Buffer.from(String(storedPassword || ''))
+  const submitted = Buffer.from(String(submittedPassword || ''))
+  return stored.length === submitted.length && crypto.timingSafeEqual(stored, submitted)
+}
+
+const verifyAccountPassword = async (account, submittedPassword) => {
+  if (!account) return false
+  const matched = isPasswordHash(account.password)
+    ? await bcrypt.compare(submittedPassword, account.password)
+    : securePlaintextMatch(account.password, submittedPassword)
+  if (!matched || isPasswordHash(account.password)) return matched
+
+  const upgradedAccount = { ...account, password: await bcrypt.hash(submittedPassword, 12) }
+  accounts = accounts.some((item) => item.id === upgradedAccount.id)
+    ? accounts.map((item) => (item.id === upgradedAccount.id ? upgradedAccount : item))
+    : [upgradedAccount, ...accounts]
+  await databaseStore?.upsertUser?.(upgradedAccount)
+  Object.assign(account, upgradedAccount)
+  return true
+}
+
+const maskEmail = (email) => {
+  const [localPart, domain = ''] = String(email || '').split('@')
+  if (!localPart || !domain) return 'your registered email'
+  const visible = localPart.slice(0, Math.min(2, localPart.length))
+  return `${visible}${'*'.repeat(Math.max(localPart.length - visible.length, 2))}@${domain}`
+}
+
+const hashMfaCode = (challengeId, code) =>
+  crypto.createHmac('sha256', mfaCodeSecret).update(`${challengeId}:${code}`).digest('hex')
+
+const isMfaOperational = () => mfaRequired && emailMfaConfigured && Boolean(databaseStore?.createMfaChallenge)
+
+const getEmailTransporter = () => {
+  if (!emailMfaConfigured) return null
+  if (!emailTransporter) {
+    emailTransporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      auth: { user: smtpUser, pass: smtpPass },
+    })
+  }
+  return emailTransporter
+}
+
+const sendMfaCodeEmail = async (account, code) => {
+  const transporter = getEmailTransporter()
+  if (!transporter) throw new Error('Email MFA is not configured')
+  const expiryLabel = `${mfaCodeTtlMinutes} minutes`
+  await transporter.sendMail({
+    from: smtpFrom,
+    to: account.email,
+    subject: `${code} is your FeastFlow verification code`,
+    text: `Your FeastFlow verification code is ${code}. It expires in ${expiryLabel}. Do not share this code with anyone.`,
+    html: `
+      <div style="font-family:Arial,sans-serif;color:#151311;max-width:560px;margin:auto;padding:28px;border:1px solid #ded8cf;border-radius:8px">
+        <p style="margin:0 0 8px;color:#a63623;font-size:12px;font-weight:700;letter-spacing:1px">FEASTFLOW SECURITY</p>
+        <h1 style="margin:0 0 16px;font-size:24px">Verify your sign-in</h1>
+        <p style="line-height:1.55">Use this one-time code to finish signing in. It expires in ${expiryLabel}.</p>
+        <p style="margin:22px 0;padding:16px;background:#dff1e7;border-radius:6px;font-size:28px;font-weight:800;letter-spacing:8px;text-align:center">${code}</p>
+        <p style="color:#67625a;line-height:1.5">Do not share this code. If you did not try to sign in, you can safely ignore this email.</p>
+      </div>
+    `,
+  })
+}
+
+const issueEmailMfaChallenge = async (account) => {
+  const challengeId = `MFA-${crypto.randomUUID().toUpperCase()}`
+  const code = String(crypto.randomInt(100000, 1_000_000))
+  const expiresAt = new Date(Date.now() + mfaCodeTtlMinutes * 60_000)
+  await databaseStore.createMfaChallenge({
+    id: challengeId,
+    userId: account.id,
+    purpose: 'login',
+    codeHash: hashMfaCode(challengeId, code),
+    expiresAt,
+    maxAttempts: mfaMaxAttempts,
+  })
+  try {
+    await sendMfaCodeEmail(account, code)
+  } catch (error) {
+    await databaseStore.invalidateMfaChallenge(challengeId).catch(() => undefined)
+    throw error
+  }
+  return {
+    mfaRequired: true,
+    challengeId,
+    delivery: maskEmail(account.email),
+    expiresAt: expiresAt.toISOString(),
+  }
+}
+
+const ensureVendorProfileForAccount = async (account) => {
+  if (!account || account.role !== 'vendor') return account
+
+  if (!account.vendorId) {
+    account.vendorId = applicationVendorIdForUser(account)
+  }
+
+  const localAccountIndex = accounts.findIndex((item) => item.id === account.id)
+  if (localAccountIndex >= 0) {
+    accounts[localAccountIndex] = { ...accounts[localAccountIndex], vendorId: account.vendorId }
+  } else {
+    accounts = [account, ...accounts]
+  }
+
+  if (databaseStore?.upsertUser) {
+    await databaseStore.upsertUser(account)
+  }
+
+  if (!vendors.some((vendor) => vendor.id === account.vendorId)) {
+    vendors = [createOnboardingDraftVendor(account), ...vendors]
+    await saveState()
+    await reloadStateFromDatabase()
+  }
+
+  return (await findAccountById(account.id)) || account
+}
+
 const requireAuth = asyncHandler(async (req, res, next) => {
   const header = req.headers.authorization || ''
   const token = header.startsWith('Bearer ') ? header.slice(7) : req.query.token
@@ -689,6 +919,32 @@ const hasRejectedDocument = (vendor) =>
   Object.values(vendor.documents || {}).some((document) => document?.status === 'rejected')
 
 const isCustomerVisibleVendor = (vendor) => vendor.status === 'approved' && !hasRejectedDocument(vendor)
+
+const vendorDocumentCount = (vendor) => Object.values(vendor.documents || {}).filter(Boolean).length
+
+const vendorIdentityKey = (vendor) => {
+  const name = String(vendor.name || '').trim().toLowerCase()
+  const pincode = String(vendor.pincode || '').trim().toLowerCase()
+  const cuisine = String(vendor.cuisine || '').trim().toLowerCase()
+  if (!name || name === 'complete vendor onboarding' || !pincode) return vendor.id
+  return `${name}|${pincode}|${cuisine}`
+}
+
+const dedupeAdminVendorRecords = (vendorRecords) => {
+  const groups = new Map()
+  for (const vendor of vendorRecords) {
+    const key = vendorIdentityKey(vendor)
+    groups.set(key, [...(groups.get(key) || []), vendor])
+  }
+
+  return vendorRecords.filter((vendor) => {
+    const sameBusinessVendors = groups.get(vendorIdentityKey(vendor)) || []
+    if (sameBusinessVendors.length < 2 || vendorDocumentCount(vendor) > 0) return true
+    return !sameBusinessVendors.some(
+      (candidate) => candidate.id !== vendor.id && vendorDocumentCount(candidate) > 0,
+    )
+  })
+}
 
 const findVendorAndPackage = (vendorId, packageId) => {
   const vendor = vendors.find((item) => item.id === vendorId)
@@ -766,7 +1022,47 @@ const initializePersistence = async () => {
   }
 }
 
-const publishEvent = (title, body, payload = {}) => {
+const matchesAudience = (identity, audience) => {
+  if (!audience) return true
+  if (audience.userIds?.includes(identity.userId || identity.id)) return true
+  if (audience.vendorIds?.includes(identity.vendorId)) return true
+  if (audience.roles?.includes(identity.userRole || identity.role)) return true
+  return false
+}
+
+const sendPushNotification = async (title, body, payload = {}, audience = null) => {
+  if (!pushEnabled || !databaseStore?.listPushSubscriptions) return 0
+  const subscriptions = await databaseStore.listPushSubscriptions()
+  const recipients = subscriptions.filter((subscription) => matchesAudience(subscription, audience))
+  const message = JSON.stringify({
+    title,
+    body,
+    url: payload.url || '/',
+    tag: payload.tag || payload.bookingId || payload.vendorId || title,
+  })
+  let delivered = 0
+
+  await Promise.all(
+    recipients.map(async (subscription) => {
+      try {
+        await webPush.sendNotification(
+          { endpoint: subscription.endpoint, keys: subscription.keys },
+          message,
+        )
+        delivered += 1
+      } catch (error) {
+        if ([404, 410].includes(error?.statusCode)) {
+          await databaseStore.deletePushSubscription(subscription.id)
+          return
+        }
+        console.error('Push notification failed:', error?.message || error)
+      }
+    }),
+  )
+  return delivered
+}
+
+const publishEvent = (title, body, payload = {}, audience = null) => {
   const event = {
     id: makeId('EVT'),
     title,
@@ -775,13 +1071,23 @@ const publishEvent = (title, body, payload = {}) => {
     time: nowTime(),
   }
   for (const client of eventClients) {
-    client.write(`event: marketplace\n`)
-    client.write(`data: ${JSON.stringify(event)}\n\n`)
+    if (!matchesAudience(client.user, audience)) continue
+    client.response.write(`event: marketplace\n`)
+    client.response.write(`data: ${JSON.stringify(event)}\n\n`)
   }
-  persistedEvents = [event, ...persistedEvents].slice(0, 100)
-  databaseStore?.logEvent(event).catch((error) => {
+  const persistedEvent = {
+    ...event,
+    payload: audience ? { ...payload, audience } : payload,
+  }
+  persistedEvents = [persistedEvent, ...persistedEvents].slice(0, 100)
+  databaseStore?.logEvent(persistedEvent).catch((error) => {
     console.error('Failed to persist event log:', error.message)
   })
+  if (audience) {
+    sendPushNotification(title, body, payload, audience).catch((error) => {
+      console.error('Failed to send push event:', error.message)
+    })
+  }
   return event
 }
 
@@ -791,72 +1097,237 @@ app.get('/api/health', (_req, res) => {
     service: 'feastflow-api',
     database: databaseStore ? 'mysql' : 'memory',
     databaseTarget: isMysqlEnabled() ? databaseLabel() : null,
+    pushNotifications: pushEnabled && Boolean(databaseStore),
+    emailMfa: {
+      required: mfaRequired,
+      configured: emailMfaConfigured && Boolean(databaseStore),
+    },
     time: new Date().toISOString(),
   })
 })
 
-app.post('/api/auth/login', asyncHandler(async (req, res) => {
-  const role = req.body.role
-  const email = String(req.body.email || '').trim().toLowerCase()
-  const password = String(req.body.password || '')
-  if (!demoAccounts[role] || !email || !password) {
-    return res.status(400).json({ message: 'Role, email, and password are required' })
-  }
+app.post('/api/auth/login', rateLimit({ scope: 'login', limit: 10, windowMs: 15 * 60_000 }), asyncHandler(async (req, res) => {
+  const input = parseBody(loginRequestSchema, req, res)
+  if (!input) return
 
-  const account = await findAccountForLogin({ role, email })
-
-  if (!account || account.password !== password) {
+  let account = await findAccountForLogin({ role: input.role, email: input.email })
+  if (!account || !(await verifyAccountPassword(account, input.password))) {
     return res.status(401).json({ message: 'Invalid credentials for this role' })
   }
 
+  account = await ensureVendorProfileForAccount(account)
+  if (mfaRequired) {
+    if (!isMfaOperational()) {
+      return res.status(503).json({ message: 'Email MFA is not configured. Add SMTP settings before enabling MFA.' })
+    }
+    try {
+      return res.status(202).json(await issueEmailMfaChallenge(account))
+    } catch (error) {
+      console.error('Could not deliver MFA email:', error.message)
+      return res.status(503).json({ message: 'Verification email could not be sent. Please try again shortly.' })
+    }
+  }
   const user = publicUser(account)
   res.json({ token: issueToken(user), user })
 }))
 
-app.post('/api/auth/register', asyncHandler(async (req, res) => {
-  const role = req.body.role
-  const email = String(req.body.email || '').trim().toLowerCase()
-  const name = String(req.body.name || '').trim()
-  if (!demoAccounts[role] || !email.includes('@')) {
-    return res.status(400).json({ message: 'Valid role and email are required' })
+app.post('/api/auth/register', rateLimit({ scope: 'register', limit: 5, windowMs: 60 * 60_000 }), asyncHandler(async (req, res) => {
+  const input = parseBody(registerRequestSchema, req, res)
+  if (!input) return
+
+  if (input.role === 'admin') {
+    return res.status(403).json({ message: 'Administrator accounts are provisioned internally' })
   }
 
-  if (await findAccountForLogin({ role, email })) {
+  if (await findAccountForLogin({ role: input.role, email: input.email })) {
     return res.status(409).json({ message: 'An account already exists for this email and role' })
   }
 
-  const account = {
-    id: accountIdFor(role, email),
-    email,
-    password: String(req.body.password || 'demo1234'),
-    name: name || email.split('@')[0],
-    role,
+  let account = {
+    id: accountIdFor(input.role, input.email),
+    email: input.email,
+    password: await bcrypt.hash(input.password, 12),
+    name: input.name,
+    role: input.role,
   }
-  if (role === 'vendor') {
-    account.vendorId = `vendor-${email.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 42)}`
+  if (input.role === 'vendor') {
+    account.vendorId = `vendor-${input.email.replace(/[^a-z0-9]/gi, '-').toLowerCase().slice(0, 42)}`
   }
   accounts = [account, ...accounts]
   if (databaseStore?.upsertUser) {
     await databaseStore.upsertUser(account)
-  } else {
-    await saveState()
+  }
+  account = await ensureVendorProfileForAccount(account)
+  if (input.role !== 'vendor') await saveState()
+  if (mfaRequired) {
+    if (!isMfaOperational()) {
+      return res.status(503).json({ message: 'Email MFA is not configured. Add SMTP settings before enabling MFA.' })
+    }
+    try {
+      return res.status(202).json(await issueEmailMfaChallenge(account))
+    } catch (error) {
+      console.error('Could not deliver MFA email:', error.message)
+      return res.status(503).json({ message: 'Verification email could not be sent. Please try again shortly.' })
+    }
   }
   const user = publicUser(account)
   res.status(201).json({ token: issueToken(user), user })
 }))
 
+app.post('/api/auth/mfa/verify', rateLimit({ scope: 'mfa-verify', limit: 8, windowMs: 10 * 60_000 }), asyncHandler(async (req, res) => {
+  const input = parseBody(mfaCodeSchema, req, res)
+  if (!input) return
+  if (!mfaRequired) return res.status(404).json({ message: 'Email MFA is not enabled' })
+  if (!isMfaOperational()) return res.status(503).json({ message: 'Email MFA is not configured' })
+
+  const challenge = await databaseStore.getMfaChallengeById(input.challengeId)
+  if (!challenge || challenge.purpose !== 'login' || challenge.status !== 'pending') {
+    return res.status(400).json({ message: 'This verification request is no longer valid. Sign in again.' })
+  }
+  if (!challenge.expiresAt || new Date(challenge.expiresAt).getTime() <= Date.now()) {
+    await databaseStore.invalidateMfaChallenge(challenge.id)
+    return res.status(410).json({ message: 'This verification code has expired. Sign in again.' })
+  }
+  if (challenge.attempts >= challenge.maxAttempts) {
+    await databaseStore.invalidateMfaChallenge(challenge.id)
+    return res.status(429).json({ message: 'Too many incorrect codes. Sign in again to receive a new code.' })
+  }
+
+  if (!securePlaintextMatch(challenge.codeHash, hashMfaCode(challenge.id, input.code))) {
+    const updatedChallenge = await databaseStore.recordMfaChallengeAttempt(challenge.id)
+    if (updatedChallenge?.attempts >= updatedChallenge.maxAttempts) {
+      await databaseStore.invalidateMfaChallenge(challenge.id)
+      return res.status(429).json({ message: 'Too many incorrect codes. Sign in again to receive a new code.' })
+    }
+    return res.status(400).json({ message: 'That verification code is not correct.' })
+  }
+
+  const account = await findAccountById(challenge.userId)
+  if (!account || !(await databaseStore.verifyMfaChallenge(challenge.id))) {
+    return res.status(400).json({ message: 'This verification request is no longer valid. Sign in again.' })
+  }
+  const user = publicUser(account)
+  res.json({ token: issueToken(user), user })
+}))
+
+app.post('/api/auth/mfa/resend', rateLimit({ scope: 'mfa-resend', limit: 3, windowMs: 10 * 60_000 }), asyncHandler(async (req, res) => {
+  const input = parseBody(mfaResendSchema, req, res)
+  if (!input) return
+  if (!mfaRequired) return res.status(404).json({ message: 'Email MFA is not enabled' })
+  if (!isMfaOperational()) return res.status(503).json({ message: 'Email MFA is not configured' })
+
+  const challenge = await databaseStore.getMfaChallengeById(input.challengeId)
+  if (!challenge || challenge.purpose !== 'login' || challenge.status !== 'pending') {
+    return res.status(400).json({ message: 'This verification request is no longer valid. Sign in again.' })
+  }
+  const account = await findAccountById(challenge.userId)
+  if (!account) return res.status(400).json({ message: 'This verification request is no longer valid. Sign in again.' })
+
+  await databaseStore.invalidateMfaChallenge(challenge.id)
+  try {
+    return res.status(202).json(await issueEmailMfaChallenge(account))
+  } catch (error) {
+    console.error('Could not resend MFA email:', error.message)
+    return res.status(503).json({ message: 'Verification email could not be sent. Please try again shortly.' })
+  }
+}))
+
 app.get('/api/bootstrap', requireAuth, asyncHandler(async (req, res) => {
   await reloadStateFromDatabase()
-  const account = await findAccountById(req.user.id)
+  let account = await findAccountById(req.user.id)
   if (!account) {
     return res.status(401).json({ message: 'Session user no longer exists. Please sign in again.' })
   }
+  account = await ensureVendorProfileForAccount(account)
   res.json({
     vendors,
     bookings,
     addOns,
     user: publicUser(account),
   })
+}))
+
+app.get('/api/notifications', requireAuth, asyncHandler(async (req, res) => {
+  await reloadStateFromDatabase()
+  const notifications = persistedEvents
+    .filter((event) => event.payload?.audience && matchesAudience(req.user, event.payload.audience))
+    .map((event) => ({
+      id: event.id,
+      title: event.title,
+      body: event.body,
+      time: event.time,
+    }))
+    .slice(0, 20)
+  res.json({ notifications })
+}))
+
+app.get('/api/admin/vendors', requireAuth, asyncHandler(async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'Admin role required' })
+  await reloadStateFromDatabase()
+
+  const search = String(req.query.search || '').trim().toLowerCase()
+  const status = String(req.query.status || 'all').trim()
+  const reviewPriority = { pending: 0, 'needs-info': 1, rejected: 2, approved: 3 }
+  const results = dedupeAdminVendorRecords(vendors)
+    .filter((vendor) => status === 'all' || vendor.status === status)
+    .filter((vendor) => !search || vendorSearchText(vendor).includes(search) || vendor.license.toLowerCase().includes(search))
+    .sort((first, second) => {
+      const firstOpenDocs = Object.values(first.documents || {}).filter((document) => document?.status !== 'approved').length
+      const secondOpenDocs = Object.values(second.documents || {}).filter((document) => document?.status !== 'approved').length
+      return secondOpenDocs - firstOpenDocs || reviewPriority[first.status] - reviewPriority[second.status] || first.name.localeCompare(second.name)
+    })
+
+  res.json({ vendors: results, count: results.length })
+}))
+
+app.get('/api/push/public-key', requireAuth, (_req, res) => {
+  if (!pushEnabled) return res.status(503).json({ message: 'Push notifications are not configured' })
+  res.json({ publicKey: vapidPublicKey })
+})
+
+app.post('/api/push/subscribe', requireAuth, asyncHandler(async (req, res) => {
+  if (!pushEnabled || !databaseStore?.upsertPushSubscription) {
+    return res.status(503).json({ message: 'Push notifications require MySQL and VAPID configuration' })
+  }
+  const subscription = req.body.subscription || {}
+  const endpoint = String(subscription.endpoint || '').trim()
+  const p256dh = String(subscription.keys?.p256dh || '').trim()
+  const auth = String(subscription.keys?.auth || '').trim()
+  if (!endpoint || !p256dh || !auth) {
+    return res.status(400).json({ message: 'A valid browser push subscription is required' })
+  }
+
+  const id = `PUSH-${crypto.createHash('sha256').update(endpoint).digest('hex').slice(0, 48)}`
+  await databaseStore.upsertPushSubscription({
+    id,
+    userId: req.user.id,
+    userRole: req.user.role,
+    vendorId: req.user.vendorId,
+    endpoint,
+    p256dh,
+    auth,
+  })
+  res.status(201).json({ subscribed: true })
+}))
+
+app.delete('/api/push/subscribe', requireAuth, asyncHandler(async (req, res) => {
+  const endpoint = String(req.body.endpoint || '').trim()
+  if (!endpoint || !databaseStore?.deletePushSubscription) {
+    return res.json({ subscribed: false })
+  }
+  const id = `PUSH-${crypto.createHash('sha256').update(endpoint).digest('hex').slice(0, 48)}`
+  await databaseStore.deletePushSubscription(id)
+  res.json({ subscribed: false })
+}))
+
+app.post('/api/push/test', requireAuth, asyncHandler(async (req, res) => {
+  const delivered = await sendPushNotification(
+    'FeastFlow notifications enabled',
+    'Booking, document, payment, and chat updates can now reach this device.',
+    { url: '/', tag: 'feastflow-push-enabled' },
+    { userIds: [req.user.id] },
+  )
+  res.json({ delivered })
 }))
 
 app.post('/api/vendors/search', requireAuth, (req, res) => {
@@ -921,7 +1392,6 @@ app.post('/api/vendors/application', requireAuth, asyncHandler(async (req, res) 
   }
   const foodLicense = Boolean(mergedDocuments.foodLicense)
   const identity = Boolean(mergedDocuments.identity)
-  const insurance = Boolean(mergedDocuments.insurance)
 
   if (!businessName || !license) {
     return res.status(400).json({ message: 'Business name and license number are required' })
@@ -937,9 +1407,7 @@ app.post('/api/vendors/application', requireAuth, asyncHandler(async (req, res) 
       ? 'needs-info'
       : currentVendor?.status === 'approved'
         ? 'approved'
-        : insurance
-          ? 'pending'
-          : 'needs-info'
+        : 'pending'
   const preservedPackages = currentVendor?.packages?.length
     ? currentVendor.packages.map((pack) => ({
         ...pack,
@@ -973,17 +1441,13 @@ app.post('/api/vendors/application', requireAuth, asyncHandler(async (req, res) 
     badges:
       currentVendor?.status === 'approved'
         ? currentVendor.badges
-        : insurance
-          ? ['Under review']
-          : ['Needs document review'],
+        : ['Under review'],
     image: bannerImage,
     payoutDue: currentVendor?.payoutDue || 0,
     availability: currentVendor?.availability?.length ? currentVendor.availability : [futureDate(18), futureDate(30)],
     adminNote: hasRejectedDocuments
       ? currentVendor?.adminNote || 'A document needs correction.'
-      : insurance
-        ? currentVendor?.adminNote
-        : 'Insurance document is missing.',
+      : currentVendor?.adminNote,
     packages: preservedPackages.length
       ? preservedPackages
       : [
@@ -1028,7 +1492,8 @@ app.post('/api/vendors/application', requireAuth, asyncHandler(async (req, res) 
   const persistedVendor = vendors.find((vendor) => vendor.id === appVendor.id) || appVendor
   publishEvent('Vendor application submitted', `${persistedVendor.name} is waiting for admin review.`, {
     vendorId: persistedVendor.id,
-  })
+    url: '/',
+  }, { roles: ['admin'] })
   res.status(201).json({ vendor: persistedVendor })
 }))
 
@@ -1146,7 +1611,8 @@ app.post('/api/bookings', requireAuth, asyncHandler(async (req, res) => {
   bookings = [booking, ...bookings]
   publishEvent(mode === 'instant' ? 'Booking confirmed' : 'Quote request sent', `${booking.id} with ${vendor.name}`, {
     bookingId: booking.id,
-  })
+    url: '/',
+  }, { vendorIds: [vendor.id] })
   await saveState()
   res.status(201).json({ booking })
 }))
@@ -1160,7 +1626,12 @@ app.post('/api/bookings/:bookingId/messages', requireAuth, asyncHandler(async (r
   if (!text) return res.status(400).json({ message: 'Message text is required' })
 
   booking.messages.push({ from, text, time: nowTime() })
-  publishEvent('New chat message', `${booking.id}: ${text}`, { bookingId: booking.id })
+  publishEvent(
+    'New chat message',
+    `${booking.id}: ${text}`,
+    { bookingId: booking.id, url: '/' },
+    from === 'customer' ? { vendorIds: [booking.vendorId] } : { roles: ['customer'] },
+  )
   await saveState()
   res.json({ booking })
 }))
@@ -1189,7 +1660,7 @@ app.post('/api/bookings/:bookingId/vendor-decision', requireAuth, asyncHandler(a
     booking.messages.push({ from: 'vendor', text: 'We accepted the request. Payment link is ready.', time: nowTime() })
   }
 
-  publishEvent('Vendor response saved', `${booking.id} is now ${booking.status}.`, { bookingId: booking.id })
+  publishEvent('Vendor response saved', `${booking.id} is now ${booking.status}.`, { bookingId: booking.id, url: '/' }, { roles: ['customer'] })
   await saveState()
   res.json({ booking })
 }))
@@ -1225,7 +1696,7 @@ app.post('/api/payments/:paymentId/confirm', requireAuth, asyncHandler(async (re
   booking.deposit = payment.amount
   booking.timeline.push('Customer completed payment', 'Booking confirmed')
 
-  publishEvent('Payment successful', `${booking.id} payment captured.`, { bookingId: booking.id, paymentId: payment.id })
+  publishEvent('Payment successful', `${booking.id} payment captured.`, { bookingId: booking.id, paymentId: payment.id, url: '/' }, { vendorIds: [booking.vendorId] })
   await saveState()
   res.json({ payment, booking })
 }))
@@ -1261,7 +1732,7 @@ app.patch('/api/admin/vendors/:vendorId/status', requireAuth, asyncHandler(async
     vendor.badges = Array.from(new Set([...vendor.badges.filter((badge) => badge !== 'Under review'), 'Verified']))
   }
 
-  publishEvent('Vendor verification updated', `${vendor.name} moved to ${vendor.status}.`, { vendorId: vendor.id })
+  publishEvent('Vendor verification updated', `${vendor.name} moved to ${vendor.status}.`, { vendorId: vendor.id, url: '/' }, { vendorIds: [vendor.id] })
   await saveState()
   res.json({ vendor })
 }))
@@ -1326,8 +1797,97 @@ app.patch('/api/documents/:documentId/status', requireAuth, asyncHandler(async (
   publishEvent('Document review updated', `${document.documentName} is now ${status}.`, {
     documentId: document.id,
     vendorId: document.vendorId,
-  })
+    url: '/',
+  }, { vendorIds: [document.vendorId] })
   res.json({ document, vendor })
+}))
+
+const findDocumentForAdminAction = async (documentId) => {
+  let document = databaseStore?.getDocumentById
+    ? await databaseStore.getDocumentById(documentId)
+    : null
+  if (!document) {
+    for (const vendor of vendors) {
+      const match = Object.values(vendor.documents || {}).find((item) => item?.id === documentId)
+      if (match) {
+        document = match
+        break
+      }
+    }
+  }
+  return document
+}
+
+const removeDocumentFromVendor = async ({ document, adminNote, eventTitle, eventBody, eventPayload }) => {
+  if (!document) return null
+
+  await reloadStateFromDatabase()
+  let vendor = vendors.find((item) => item.id === document.vendorId)
+  if (!vendor) return null
+
+  const documentKey = document.key || documentKeyFromLabel(document.documentName)
+  const documentLabel = document.documentName || applicationDocumentItems[documentKey] || 'Document'
+  vendor.documents = { ...(vendor.documents || {}) }
+  delete vendor.documents[documentKey]
+  vendor.docs = (vendor.docs || []).filter((label) => label !== documentLabel)
+  vendor.status = 'needs-info'
+  vendor.adminNote = adminNote(documentLabel, vendor)
+  vendor.badges = Array.from(
+    new Set([...vendor.badges.filter((badge) => badge !== 'Verified'), 'Needs document review']),
+  )
+
+  await saveState()
+  await reloadStateFromDatabase()
+  vendor = vendors.find((item) => item.id === document.vendorId) || vendor
+  publishEvent(eventTitle, eventBody(documentLabel, vendor), {
+    documentId: document.id,
+    vendorId: vendor.id,
+    documentKey,
+    ...(eventPayload || {}),
+    url: '/',
+  }, { vendorIds: [vendor.id] })
+  return { documentId: document.id, documentKey, vendor }
+}
+
+app.post('/api/documents/:documentId/reupload-request', requireAuth, asyncHandler(async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'Admin role required' })
+
+  const reason = String(req.body.reason || '').trim()
+  if (!reason) {
+    return res.status(400).json({ message: 'Reupload reason is required' })
+  }
+
+  const document = await findDocumentForAdminAction(req.params.documentId)
+  if (!document) return res.status(404).json({ message: 'Document not found' })
+
+  const result = await removeDocumentFromVendor({
+    document,
+    adminNote: (documentLabel) => `${documentLabel} requires reupload: ${reason}`,
+    eventTitle: 'Document reupload requested',
+    eventBody: (documentLabel) => `${documentLabel} must be uploaded again.`,
+    eventPayload: { reason },
+  })
+  if (!result) return res.status(404).json({ message: 'Vendor not found for this document' })
+  res.json(result)
+}))
+
+app.delete('/api/documents/:documentId', requireAuth, asyncHandler(async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ message: 'Admin role required' })
+
+  const reason = String(req.body?.reason || '').trim()
+  const document = await findDocumentForAdminAction(req.params.documentId)
+  if (!document) return res.status(404).json({ message: 'Document not found' })
+
+  const result = await removeDocumentFromVendor({
+    document,
+    adminNote: (documentLabel) =>
+      reason ? `${documentLabel} deleted by admin: ${reason}` : `${documentLabel} was deleted by admin.`,
+    eventTitle: 'Document deleted',
+    eventBody: (documentLabel, vendor) => `${documentLabel} was deleted from ${vendor.name}.`,
+    eventPayload: reason ? { reason } : {},
+  })
+  if (!result) return res.status(404).json({ message: 'Vendor not found for this document' })
+  res.json({ ...result, deleted: true })
 }))
 
 app.get('/api/events', requireAuth, (req, res) => {
@@ -1346,16 +1906,17 @@ app.get('/api/events', requireAuth, (req, res) => {
     })}\n\n`,
   )
 
-  eventClients.add(res)
+  const client = { response: res, user: req.user }
+  eventClients.add(client)
   req.on('close', () => {
-    eventClients.delete(res)
+    eventClients.delete(client)
   })
 })
 
 app.get('/images/:imageName', (req, res, next) => {
   const image = demoImageAssets[req.params.imageName]
   if (!image) return next()
-  res.setHeader('Cache-Control', 'public, max-age=86400')
+  res.setHeader('Cache-Control', 'public, max-age=300, must-revalidate')
   res.type('image/svg+xml').send(createDemoImageSvg(image))
 })
 
