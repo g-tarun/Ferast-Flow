@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import type { ChangeEvent, FormEvent, ReactElement } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ChangeEvent, FormEvent, PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import {
   AlertCircle,
   BadgeCheck,
@@ -13,6 +13,8 @@ import {
   Clock3,
   CreditCard,
   Download,
+  Eye,
+  EyeOff,
   FileCheck2,
   FileText,
   KeyRound,
@@ -232,6 +234,7 @@ type ApiAuthResponse = ApiAuthenticatedResponse | MfaChallenge
 const generatedImageVersion = 'v=20260712-doc-flow'
 const versionedDemoImage = (path: string) => `${path}?${generatedImageVersion}`
 const heroImage = versionedDemoImage('/images/hero-catering.png')
+const landingHeroImage = '/images/feastflow-landing-v2.webp'
 const weddingImage = versionedDemoImage('/images/wedding-buffet.png')
 const corporateImage = versionedDemoImage('/images/corporate-lunch.png')
 const dessertImage = versionedDemoImage('/images/dessert-station.png')
@@ -990,6 +993,212 @@ function Metric({
   )
 }
 
+function FeastDepthScene({ variant }: { variant: 'auth' | 'discovery' }) {
+  const mountRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const mount = mountRef.current
+    if (!mount) return
+
+    let cancelled = false
+    let teardown = () => {}
+
+    void import('three').then((THREE) => {
+      if (cancelled || !mount.isConnected) return
+
+      const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      const compact = window.matchMedia('(max-width: 760px)').matches
+      const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: false, powerPreference: 'high-performance' })
+      const scene = new THREE.Scene()
+      const camera = new THREE.Camera()
+      const pointer = new THREE.Vector2()
+      const targetPointer = new THREE.Vector2()
+      const clock = new THREE.Clock()
+      let frameId = 0
+      let visible = true
+
+      renderer.setClearColor(0x000000, 0)
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, compact ? 1 : 1.35))
+      renderer.outputColorSpace = THREE.SRGBColorSpace
+      renderer.domElement.setAttribute('aria-hidden', 'true')
+      mount.appendChild(renderer.domElement)
+      teardown = () => {
+        renderer.dispose()
+        renderer.forceContextLoss()
+        renderer.domElement.remove()
+      }
+
+      const loader = new THREE.TextureLoader()
+      loader.load(
+        landingHeroImage,
+        (texture) => {
+          if (cancelled || !mount.isConnected) {
+            texture.dispose()
+            return
+          }
+
+          texture.colorSpace = THREE.SRGBColorSpace
+          texture.minFilter = THREE.LinearFilter
+          texture.magFilter = THREE.LinearFilter
+
+          const source = texture.image as { naturalWidth?: number; naturalHeight?: number; width: number; height: number }
+          const uniforms = {
+            uTexture: { value: texture },
+            uResolution: { value: new THREE.Vector2(1, 1) },
+            uImageSize: {
+              value: new THREE.Vector2(source.naturalWidth ?? source.width, source.naturalHeight ?? source.height),
+            },
+            uPointer: { value: pointer },
+            uTime: { value: 0 },
+            uStrength: { value: compact ? 0.004 : variant === 'auth' ? 0.012 : 0.009 },
+          }
+          const geometry = new THREE.PlaneGeometry(2, 2)
+          const material = new THREE.ShaderMaterial({
+            uniforms,
+            depthTest: false,
+            depthWrite: false,
+            vertexShader: `
+              varying vec2 vUv;
+
+              void main() {
+                vUv = uv;
+                gl_Position = vec4(position.xy, 0.0, 1.0);
+              }
+            `,
+            fragmentShader: `
+              uniform sampler2D uTexture;
+              uniform vec2 uResolution;
+              uniform vec2 uImageSize;
+              uniform vec2 uPointer;
+              uniform float uTime;
+              uniform float uStrength;
+              varying vec2 vUv;
+
+              vec2 coverUv(vec2 uv) {
+                float viewportAspect = uResolution.x / uResolution.y;
+                float imageAspect = uImageSize.x / uImageSize.y;
+                vec2 scale = vec2(1.0);
+
+                if (viewportAspect > imageAspect) {
+                  scale.y = imageAspect / viewportAspect;
+                } else {
+                  scale.x = viewportAspect / imageAspect;
+                }
+
+                return (uv - 0.5) * scale + 0.5;
+              }
+
+              void main() {
+                vec2 baseUv = coverUv(vUv);
+                float foreground = smoothstep(0.18, 0.92, 1.0 - vUv.y);
+                vec2 idleDrift = vec2(sin(uTime * 0.11), cos(uTime * 0.09)) * 0.0008;
+                vec2 firstPassUv = baseUv + idleDrift + uPointer * uStrength * mix(0.28, 1.0, foreground);
+                vec3 firstPass = texture2D(uTexture, firstPassUv).rgb;
+                float luminance = dot(firstPass, vec3(0.2126, 0.7152, 0.0722));
+                float localDepth = mix(0.72, 1.08, smoothstep(0.12, 0.88, luminance));
+                vec2 finalUv = baseUv + idleDrift + uPointer * uStrength * foreground * localDepth;
+                vec3 color = texture2D(uTexture, finalUv).rgb;
+                float vignette = 1.0 - smoothstep(0.34, 0.78, distance(vUv, vec2(0.5))) * 0.13;
+                color *= vignette;
+                gl_FragColor = vec4(color, 1.0);
+              }
+            `,
+          })
+          const plane = new THREE.Mesh(geometry, material)
+          scene.add(plane)
+
+          const resize = () => {
+            const width = Math.max(1, mount.clientWidth)
+            const height = Math.max(1, mount.clientHeight)
+            uniforms.uResolution.value.set(width, height)
+            renderer.setSize(width, height, false)
+          }
+
+          const handlePointer = (event: PointerEvent) => {
+            const bounds = mount.getBoundingClientRect()
+            const inside =
+              event.clientX >= bounds.left &&
+              event.clientX <= bounds.right &&
+              event.clientY >= bounds.top &&
+              event.clientY <= bounds.bottom
+
+            if (!inside) {
+              targetPointer.set(0, 0)
+              return
+            }
+
+            targetPointer.set(
+              ((event.clientX - bounds.left) / bounds.width - 0.5) * 2,
+              -((event.clientY - bounds.top) / bounds.height - 0.5) * 2,
+            )
+          }
+
+          const render = () => {
+            if (!visible || document.hidden) return
+            pointer.lerp(targetPointer, 0.045)
+            uniforms.uTime.value = clock.getElapsedTime()
+            renderer.render(scene, camera)
+            if (!reduceMotion) frameId = window.requestAnimationFrame(render)
+          }
+
+          const start = () => {
+            window.cancelAnimationFrame(frameId)
+            if (!reduceMotion && visible && !document.hidden) frameId = window.requestAnimationFrame(render)
+          }
+
+          const handleVisibility = () => {
+            if (document.hidden) window.cancelAnimationFrame(frameId)
+            else start()
+          }
+
+          const observer = new IntersectionObserver(([entry]) => {
+            visible = entry.isIntersecting
+            if (visible) start()
+            else window.cancelAnimationFrame(frameId)
+          }, { threshold: 0.01 })
+          const resizeObserver = new ResizeObserver(resize)
+
+          resizeObserver.observe(mount)
+          observer.observe(mount)
+          window.addEventListener('pointermove', handlePointer, { passive: true })
+          document.addEventListener('visibilitychange', handleVisibility)
+          resize()
+          render()
+
+          teardown = () => {
+            window.cancelAnimationFrame(frameId)
+            window.removeEventListener('pointermove', handlePointer)
+            document.removeEventListener('visibilitychange', handleVisibility)
+            resizeObserver.disconnect()
+            observer.disconnect()
+            geometry.dispose()
+            material.dispose()
+            texture.dispose()
+            renderer.dispose()
+            renderer.forceContextLoss()
+            renderer.domElement.remove()
+          }
+        },
+        undefined,
+        () => {
+          mount.dataset.sceneUnavailable = 'true'
+          renderer.dispose()
+          renderer.domElement.remove()
+        },
+      )
+    }).catch(() => {
+      mount.dataset.sceneUnavailable = 'true'
+    })
+
+    return () => {
+      cancelled = true
+      teardown()
+    }
+  }, [variant])
+
+  return <div ref={mountRef} className={`feast-depth-scene feast-depth-scene-${variant}`} aria-hidden="true" />
+}
+
 function LoginPage({
   onAuthenticate,
   mfaChallenge,
@@ -1018,6 +1227,7 @@ function LoginPage({
   const [name, setName] = useState('Demo Customer')
   const [email, setEmail] = useState(demoAccounts.customer.email)
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [mfaCode, setMfaCode] = useState('')
 
   useEffect(() => {
@@ -1053,38 +1263,100 @@ function LoginPage({
 
   const availableRoles: Role[] = mode === 'register' ? ['customer', 'vendor'] : ['customer', 'vendor', 'admin']
   const canSubmit = Boolean(email.trim() && password.trim().length >= 8 && (mode === 'login' || name.trim()))
+  const roleDetails: Record<Role, { label: string; description: string; panelCopy: string; icon: ReactElement }> = {
+    customer: {
+      label: 'Plan an event',
+      description: 'Find, compare, and book verified caterers.',
+      panelCopy: 'Bring trusted caterers, quotes, and every event detail into one calm workspace.',
+      icon: <UserRound size={20} aria-hidden="true" />,
+    },
+    vendor: {
+      label: 'Grow my business',
+      description: 'Manage menus, documents, and bookings.',
+      panelCopy: 'Run onboarding, packages, requests, and bookings without losing the thread.',
+      icon: <Store size={20} aria-hidden="true" />,
+    },
+    admin: {
+      label: 'Review marketplace',
+      description: 'Verify vendors and oversee operations.',
+      panelCopy: 'Review vendors, documents, and marketplace activity from one clear view.',
+      icon: <ShieldCheck size={20} aria-hidden="true" />,
+    },
+  }
+
+  const moveHero = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.pointerType === 'touch' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const x = (event.clientX - bounds.left) / bounds.width - 0.5
+    const y = (event.clientY - bounds.top) / bounds.height - 0.5
+    event.currentTarget.style.setProperty('--hero-shift-x', `${x * -10}px`)
+    event.currentTarget.style.setProperty('--hero-shift-y', `${y * -7}px`)
+  }
+
+  const resetHero = (event: ReactPointerEvent<HTMLElement>) => {
+    event.currentTarget.style.setProperty('--hero-shift-x', '0px')
+    event.currentTarget.style.setProperty('--hero-shift-y', '0px')
+  }
 
   return (
     <main className="auth-page">
-      <section className="auth-hero" style={{ backgroundImage: `url(${heroImage})` }}>
-        <div className="auth-copy">
-          <span className="brand-mark">
-            <ChefHat size={24} aria-hidden="true" />
+      <section className="auth-hero" onPointerMove={moveHero} onPointerLeave={resetHero}>
+        <div className="auth-hero-media-wrap" aria-hidden="true">
+          <img className="auth-hero-media" src={landingHeroImage} alt="" />
+        </div>
+        <FeastDepthScene variant="auth" />
+        <div className="auth-brand">
+          <span className="auth-brand-mark">
+            <ChefHat size={22} aria-hidden="true" />
           </span>
-          <p className="eyebrow">FeastFlow secure access</p>
-          <h1>Login to the right catering workspace.</h1>
-          <p>
-            Customers book events, vendors operate menus and requests, and admins verify the
-            marketplace from protected role-based screens.
+          <span>
+            <strong>FeastFlow</strong>
+            <small>Catering marketplace</small>
+          </span>
+        </div>
+
+        <div className="auth-live-pill">
+          <span aria-hidden="true" />
+          Verified kitchens. Real celebrations.
+        </div>
+
+        <div className="auth-copy">
+          <p className="eyebrow">Every detail, beautifully handled</p>
+          <h1>FeastFlow</h1>
+          <p className="auth-tagline">Great events start with the right table.</p>
+          <p className="auth-intro">
+            Discover trusted caterers, shape a menu guests will remember, and keep every quote,
+            conversation, and payment flowing in one place.
           </p>
-          <div className="auth-proof">
+          <div className="auth-proof" aria-label="Marketplace benefits">
             <span>
-              <KeyRound size={16} aria-hidden="true" />
-              Secure signed session
+              <BadgeCheck size={17} aria-hidden="true" />
+              Verified vendors
             </span>
             <span>
-              <ShieldCheck size={16} aria-hidden="true" />
-              8 hour session expiry
+              <MessageCircle size={17} aria-hidden="true" />
+              Live coordination
             </span>
             <span>
-              <BadgeCheck size={16} aria-hidden="true" />
-              Role-scoped navigation
+              <ShieldCheck size={17} aria-hidden="true" />
+              Protected payments
             </span>
           </div>
         </div>
       </section>
 
-      <section className="auth-card" aria-label="Login form">
+      <section className="auth-panel" aria-label="Account access">
+        <div className="auth-mobile-brand">
+          <span className="auth-brand-mark">
+            <ChefHat size={20} aria-hidden="true" />
+          </span>
+          <span>
+            <strong>FeastFlow</strong>
+            <small>Catering marketplace</small>
+          </span>
+        </div>
+
+        <div className="auth-card">
         {mfaChallenge ? (
           <form className="auth-form auth-mfa-form" onSubmit={submitMfa}>
             <span className="auth-mfa-mark">
@@ -1112,7 +1384,7 @@ function LoginPage({
             </label>
 
             {authError && (
-              <p className="form-error">
+              <p className="form-error" role="alert">
                 <AlertCircle size={16} aria-hidden="true" />
                 {authError}
               </p>
@@ -1135,11 +1407,14 @@ function LoginPage({
         ) : (
           <>
             <div className="auth-card-head">
-              <div>
-                <p className="eyebrow">Account</p>
-                <h2>{mode === 'login' ? 'Sign in' : 'Create account'}</h2>
+              <div className="auth-heading-copy">
+                <p className="eyebrow">Your FeastFlow account</p>
+                <h2>{mode === 'login' ? 'Welcome back' : 'Join the table'}</h2>
+                <p className="auth-role-context" key={`${mode}-${role}`} aria-live="polite">
+                  {roleDetails[role].panelCopy}
+                </p>
               </div>
-              <div className="auth-toggle" aria-label="Authentication mode">
+              <div className={`auth-toggle ${mode}`} aria-label="Authentication mode">
                 <button
                   type="button"
                   className={mode === 'login' ? 'active' : ''}
@@ -1164,46 +1439,63 @@ function LoginPage({
                   className={role === item ? 'selected' : ''}
                   type="button"
                   onClick={() => selectRole(item)}
+                  aria-pressed={role === item}
                 >
-                  {item === 'customer' && <UserRound size={18} aria-hidden="true" />}
-                  {item === 'vendor' && <Store size={18} aria-hidden="true" />}
-                  {item === 'admin' && <ShieldCheck size={18} aria-hidden="true" />}
-                  <span>{item}</span>
+                  <span className="role-card-icon">{roleDetails[item].icon}</span>
+                  <span className="role-card-copy">
+                    <strong>{roleDetails[item].label}</strong>
+                    <small>{roleDetails[item].description}</small>
+                  </span>
+                  <CheckCircle2 className="role-card-check" size={18} aria-hidden="true" />
                 </button>
               ))}
             </div>
 
-            <form className="auth-form" onSubmit={submitAuth}>
+            <form className="auth-form auth-form-enter" key={`${mode}-${role}`} onSubmit={submitAuth}>
               {mode === 'register' && (
                 <>
-                  <label>
+                  <label htmlFor="auth-name">
                     <span>Full name</span>
-                    <input value={name} onChange={(event) => setName(event.target.value)} />
+                    <input id="auth-name" autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} />
                   </label>
                   <p className="auth-register-note">Administrator accounts are provisioned internally.</p>
                 </>
               )}
-              <label>
+              <label htmlFor="auth-email">
                 <span>Email</span>
                 <input
+                  id="auth-email"
                   autoComplete="email"
                   type="email"
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                 />
               </label>
-              <label>
+              <label htmlFor="auth-password">
                 <span>Password</span>
-                <input
-                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                />
+                <span className="password-field">
+                  <input
+                    id="auth-password"
+                    autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowPassword((visible) => !visible)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff size={19} aria-hidden="true" /> : <Eye size={19} aria-hidden="true" />}
+                  </button>
+                </span>
+                <small className="field-hint">Use at least 8 characters.</small>
               </label>
 
               {authError && (
-                <p className="form-error">
+                <p className="form-error" role="alert">
                   <AlertCircle size={16} aria-hidden="true" />
                   {authError}
                 </p>
@@ -1216,6 +1508,8 @@ function LoginPage({
             </form>
           </>
         )}
+        </div>
+        <p className="auth-legal">By continuing, you agree to use FeastFlow responsibly and protect your account access.</p>
       </section>
     </main>
   )
@@ -1420,6 +1714,11 @@ export default function App() {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [activeSection])
+
+  useEffect(() => {
+    if (!session) return
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+  }, [session?.token])
 
   useEffect(() => {
     if (!session) return
@@ -2303,7 +2602,7 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell app-shell-${role}`}>
       <header className="topbar">
         <button className="brand" type="button" onClick={() => setSection(defaultSectionForRole(role))}>
           <span className="brand-mark">
@@ -2321,6 +2620,7 @@ export default function App() {
               className={activeSection === 'marketplace' ? 'active' : ''}
               type="button"
               onClick={() => setSection('marketplace')}
+              aria-current={activeSection === 'marketplace' ? 'page' : undefined}
             >
               <Search size={17} aria-hidden="true" />
               Browse
@@ -2331,6 +2631,7 @@ export default function App() {
               className={activeSection === 'bookings' ? 'active' : ''}
               type="button"
               onClick={() => setSection('bookings')}
+              aria-current={activeSection === 'bookings' ? 'page' : undefined}
             >
               <CalendarDays size={17} aria-hidden="true" />
               Bookings
@@ -2341,6 +2642,7 @@ export default function App() {
               className={activeSection === 'vendor' ? 'active' : ''}
               type="button"
               onClick={() => setSection('vendor')}
+              aria-current={activeSection === 'vendor' ? 'page' : undefined}
             >
               <Store size={17} aria-hidden="true" />
               Vendor
@@ -2351,6 +2653,7 @@ export default function App() {
               className={activeSection === 'admin' ? 'active' : ''}
               type="button"
               onClick={() => setSection('admin')}
+              aria-current={activeSection === 'admin' ? 'page' : undefined}
             >
               <ShieldCheck size={17} aria-hidden="true" />
               Admin
@@ -2415,7 +2718,7 @@ export default function App() {
         </div>
       </footer>
 
-      <main>
+      <main className="workspace-main" key={activeSection}>
         {activeSection === 'marketplace' && role === 'customer' && (
           <CustomerMarketplace
             filters={filters}
@@ -2610,7 +2913,8 @@ function CustomerMarketplace({
 
   return (
     <>
-      <section className="hero-band" style={{ backgroundImage: `url(${heroImage})` }}>
+      <section className="hero-band" style={{ backgroundImage: `url(${landingHeroImage})` }}>
+        <FeastDepthScene variant="discovery" />
         <div className="hero-copy">
           <StatusPill label="Verified vendors only" tone="success" />
           <h1>Book catering that can handle the whole event.</h1>
