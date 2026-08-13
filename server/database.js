@@ -465,6 +465,7 @@ const createSchema = async (pool) => {
     `
       CREATE TABLE IF NOT EXISTS bookings (
         id VARCHAR(120) PRIMARY KEY,
+        customer_id VARCHAR(120) NULL,
         vendor_id VARCHAR(120) NOT NULL,
         package_id VARCHAR(120) NOT NULL,
         customer_name VARCHAR(160) NOT NULL,
@@ -478,6 +479,7 @@ const createSchema = async (pool) => {
         status VARCHAR(40) NOT NULL,
         created_at DATETIME NOT NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY bookings_customer_index (customer_id),
         CONSTRAINT bookings_vendor_fk FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `,
@@ -558,10 +560,51 @@ const createSchema = async (pool) => {
         CONSTRAINT push_subscriptions_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `,
+    `
+      CREATE TABLE IF NOT EXISTS mobile_push_subscriptions (
+        id VARCHAR(120) PRIMARY KEY,
+        user_id VARCHAR(120) NOT NULL,
+        user_role VARCHAR(32) NOT NULL,
+        vendor_id VARCHAR(120) NULL,
+        expo_push_token VARCHAR(255) NOT NULL,
+        platform VARCHAR(24) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY mobile_push_token_unique (expo_push_token),
+        KEY mobile_push_user_index (user_id),
+        KEY mobile_push_role_index (user_role),
+        KEY mobile_push_vendor_index (vendor_id),
+        CONSTRAINT mobile_push_user_fk FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `,
   ]
 
   for (const statement of statements) {
     await pool.query(statement)
+  }
+
+  const [customerIdColumns] = await pool.query(
+    `
+      SELECT 1
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND COLUMN_NAME = 'customer_id'
+      LIMIT 1
+    `,
+  )
+  if (!customerIdColumns.length) {
+    await pool.query('ALTER TABLE bookings ADD COLUMN customer_id VARCHAR(120) NULL AFTER id')
+  }
+
+  const [customerIndexes] = await pool.query(
+    `
+      SELECT 1
+      FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bookings' AND INDEX_NAME = 'bookings_customer_index'
+      LIMIT 1
+    `,
+  )
+  if (!customerIndexes.length) {
+    await pool.query('CREATE INDEX bookings_customer_index ON bookings (customer_id)')
   }
 
   await migrateLegacyVendorDocuments(pool)
@@ -694,6 +737,7 @@ const readRelationalState = async (pool) => {
     const review = reviewsByBooking.get(booking.id)
     return {
       id: booking.id,
+      customerId: booking.customer_id || undefined,
       vendorId: booking.vendor_id,
       packageId: booking.package_id,
       customerName: booking.customer_name,
@@ -1009,13 +1053,14 @@ const saveRelationalState = async (pool, state, options = {}) => {
       await connection.execute(
         `
           INSERT INTO bookings (
-            id, vendor_id, package_id, customer_name, event_type, event_date, guests,
+            id, customer_id, vendor_id, package_id, customer_name, event_type, event_date, guests,
             note, amount, deposit, payment_choice, status, created_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           booking.id,
+          booking.customerId || null,
           booking.vendorId,
           booking.packageId,
           booking.customerName,
@@ -1093,19 +1138,22 @@ export const isMysqlEnabled = () => (process.env.DB_MODE || 'memory').toLowerCas
 export const databaseLabel = () =>
   `${mysqlConfig.user}@${mysqlConfig.host}:${mysqlConfig.port}/${databaseName}`
 
-export async function createDatabaseStore() {
-  if (shouldCreateDatabase) {
-    const serverConnection = await mysql.createConnection(mysqlConfig)
+const createConfiguredDatabase = async () => {
+  const serverConnection = await mysql.createConnection(mysqlConfig)
+  try {
     await serverConnection.query(
       `CREATE DATABASE IF NOT EXISTS \`${databaseName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
     )
     await serverConnection.query(`SET GLOBAL max_allowed_packet = ${mysqlMaxAllowedPacket}`).catch((error) => {
       console.warn(`Could not update MySQL max_allowed_packet: ${error.message}`)
     })
+  } finally {
     await serverConnection.end()
   }
+}
 
-  const pool = mysql.createPool({
+const createDatabasePool = () =>
+  mysql.createPool({
     ...mysqlConfig,
     database: databaseName,
     waitForConnections: true,
@@ -1114,7 +1162,28 @@ export async function createDatabaseStore() {
     dateStrings: true,
   })
 
-  await createSchema(pool)
+export async function createDatabaseStore() {
+  if (shouldCreateDatabase) {
+    await createConfiguredDatabase()
+  }
+
+  let pool = createDatabasePool()
+  try {
+    await createSchema(pool)
+  } catch (error) {
+    const databaseIsMissing = error?.code === 'ER_BAD_DB_ERROR' || Number(error?.errno) === 1049
+    const databaseCreationDisabled = process.env.MYSQL_CREATE_DATABASE === 'false'
+    if (!databaseIsMissing || databaseCreationDisabled) {
+      await pool.end().catch(() => undefined)
+      throw error
+    }
+
+    await pool.end().catch(() => undefined)
+    console.warn(`MySQL database ${databaseName} does not exist; creating it now.`)
+    await createConfiguredDatabase()
+    pool = createDatabasePool()
+    await createSchema(pool)
+  }
 
   return {
     async loadState() {
@@ -1377,6 +1446,49 @@ export async function createDatabaseStore() {
 
     async deletePushSubscription(id) {
       await pool.execute('DELETE FROM push_subscriptions WHERE id = ?', [id])
+    },
+
+    async upsertMobilePushSubscription({ id, userId, userRole, vendorId, expoPushToken, platform }) {
+      await pool.execute(
+        `
+          INSERT INTO mobile_push_subscriptions (
+            id, user_id, user_role, vendor_id, expo_push_token, platform
+          )
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON DUPLICATE KEY UPDATE
+            user_id = VALUES(user_id),
+            user_role = VALUES(user_role),
+            vendor_id = VALUES(vendor_id),
+            platform = VALUES(platform),
+            updated_at = CURRENT_TIMESTAMP
+        `,
+        [id, userId, userRole, vendorId || null, expoPushToken, platform],
+      )
+    },
+
+    async listMobilePushSubscriptions() {
+      const [rows] = await pool.query(
+        'SELECT id, user_id, user_role, vendor_id, expo_push_token, platform FROM mobile_push_subscriptions',
+      )
+      return rows.map((row) => ({
+        id: row.id,
+        userId: row.user_id,
+        userRole: row.user_role,
+        vendorId: row.vendor_id,
+        expoPushToken: row.expo_push_token,
+        platform: row.platform,
+      }))
+    },
+
+    async deleteMobilePushSubscription(id) {
+      await pool.execute('DELETE FROM mobile_push_subscriptions WHERE id = ?', [id])
+    },
+
+    async deleteMobilePushSubscriptionByToken(expoPushToken, userId) {
+      await pool.execute(
+        'DELETE FROM mobile_push_subscriptions WHERE expo_push_token = ? AND user_id = ?',
+        [expoPushToken, userId],
+      )
     },
 
     async close() {

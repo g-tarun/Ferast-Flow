@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS add_ons (
 
 CREATE TABLE IF NOT EXISTS bookings (
   id VARCHAR(120) PRIMARY KEY,
+  customer_id VARCHAR(120) NULL,
   vendor_id VARCHAR(120) NOT NULL,
   package_id VARCHAR(120) NOT NULL,
   customer_name VARCHAR(160) NOT NULL,
@@ -167,6 +168,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   status VARCHAR(40) NOT NULL,
   created_at DATETIME NOT NULL,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY bookings_customer_index (customer_id),
   FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -237,5 +239,21 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   KEY push_subscriptions_user_index (user_id),
   KEY push_subscriptions_role_index (user_role),
   KEY push_subscriptions_vendor_index (vendor_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS mobile_push_subscriptions (
+  id VARCHAR(120) PRIMARY KEY,
+  user_id VARCHAR(120) NOT NULL,
+  user_role VARCHAR(32) NOT NULL,
+  vendor_id VARCHAR(120) NULL,
+  expo_push_token VARCHAR(255) NOT NULL,
+  platform VARCHAR(24) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY mobile_push_token_unique (expo_push_token),
+  KEY mobile_push_user_index (user_id),
+  KEY mobile_push_role_index (user_role),
+  KEY mobile_push_vendor_index (vendor_id),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

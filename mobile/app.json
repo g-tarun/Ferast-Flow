@@ -1,0 +1,59 @@
+{
+  "expo": {
+    "name": "FeastFlow",
+    "slug": "feastflow-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "scheme": "feastflow",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ferastflow.feastflow",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.ferastflow.feastflow",
+      "adaptiveIcon": {
+        "backgroundColor": "#F4FFF9"
+      },
+      "edgeToEdgeEnabled": true
+    },
+    "plugins": [
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true,
+          "faceIDPermission": "Allow FeastFlow to securely unlock your account."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow FeastFlow to find caterers serving your event location."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow FeastFlow to select your catering banner image.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#16845B",
+          "defaultChannel": "feastflow-updates"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "REPLACE_WITH_EXPO_PROJECT_ID"
+      }
+    }
+  }
+}

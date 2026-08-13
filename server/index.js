@@ -75,6 +75,11 @@ const mfaCodeSchema = z.object({
 const mfaResendSchema = z.object({
   challengeId: z.string().regex(/^MFA-[A-F0-9-]{16,}$/i, 'Invalid verification request').max(120),
 })
+const mobilePushSubscriptionSchema = z.object({
+  expoPushToken: z.string().regex(/^(Expo|Exponent)PushToken\[[A-Za-z0-9_-]+\]$/, 'Invalid Expo push token').max(255),
+  platform: z.enum(['android', 'ios']),
+})
+const mobilePushTokenSchema = mobilePushSubscriptionSchema.pick({ expoPushToken: true })
 
 const parseBody = (schema, req, res) => {
   const result = schema.safeParse(req.body)
@@ -647,6 +652,7 @@ const seedVendors = () => [
 const seedBookings = () => [
   {
     id: 'BK-2401',
+    customerId: accountIdFor('customer', demoAccounts.customer.email),
     vendorId: 'spice-stem',
     packageId: 'royal-wedding',
     customerName: 'Priya Sharma',
@@ -984,6 +990,18 @@ const calculateBookingTotal = ({ vendorId, packageId, guests, addOnIds = [] }) =
   return packageTotal + addOnTotal
 }
 
+const canAccessBooking = (user, booking) => {
+  if (!user || !booking) return false
+  if (user.role === 'admin') return true
+  if (user.role === 'vendor') return Boolean(user.vendorId && user.vendorId === booking.vendorId)
+  return booking.customerId === user.id || (!booking.customerId && booking.customerName === user.name)
+}
+
+const bookingsVisibleTo = (user) => bookings.filter((booking) => canAccessBooking(user, booking))
+const bookingCustomerAudience = (booking) => booking.customerId
+  ? { userIds: [booking.customerId] }
+  : { roles: ['customer'] }
+
 const appState = () => ({
   accounts,
   vendors,
@@ -1052,9 +1070,6 @@ const matchesAudience = (identity, audience) => {
 }
 
 const sendPushNotification = async (title, body, payload = {}, audience = null) => {
-  if (!pushEnabled || !databaseStore?.listPushSubscriptions) return 0
-  const subscriptions = await databaseStore.listPushSubscriptions()
-  const recipients = subscriptions.filter((subscription) => matchesAudience(subscription, audience))
   const message = JSON.stringify({
     title,
     body,
@@ -1063,23 +1078,61 @@ const sendPushNotification = async (title, body, payload = {}, audience = null) 
   })
   let delivered = 0
 
-  await Promise.all(
-    recipients.map(async (subscription) => {
-      try {
-        await webPush.sendNotification(
-          { endpoint: subscription.endpoint, keys: subscription.keys },
-          message,
-        )
-        delivered += 1
-      } catch (error) {
-        if ([404, 410].includes(error?.statusCode)) {
-          await databaseStore.deletePushSubscription(subscription.id)
-          return
+  if (pushEnabled && databaseStore?.listPushSubscriptions) {
+    const subscriptions = await databaseStore.listPushSubscriptions()
+    const recipients = subscriptions.filter((subscription) => matchesAudience(subscription, audience))
+    await Promise.all(
+      recipients.map(async (subscription) => {
+        try {
+          await webPush.sendNotification(
+            { endpoint: subscription.endpoint, keys: subscription.keys },
+            message,
+          )
+          delivered += 1
+        } catch (error) {
+          if ([404, 410].includes(error?.statusCode)) {
+            await databaseStore.deletePushSubscription(subscription.id)
+            return
+          }
+          console.error('Web push notification failed:', error?.message || error)
         }
-        console.error('Push notification failed:', error?.message || error)
+      }),
+    )
+  }
+
+  if (databaseStore?.listMobilePushSubscriptions) {
+    const subscriptions = await databaseStore.listMobilePushSubscriptions()
+    const recipients = subscriptions.filter((subscription) => matchesAudience(subscription, audience))
+    if (recipients.length) {
+      try {
+        const response = await fetch('https://exp.host/--/api/v2/push/send', {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify(recipients.map((subscription) => ({
+            to: subscription.expoPushToken,
+            title,
+            body,
+            sound: 'default',
+            channelId: 'feastflow-updates',
+            data: payload,
+          }))),
+        })
+        const result = await response.json().catch(() => null)
+        if (!response.ok) throw new Error(result?.errors?.[0]?.message || `Expo push failed (${response.status})`)
+        const tickets = Array.isArray(result?.data) ? result.data : [result?.data]
+        for (const [index, ticket] of tickets.entries()) {
+          if (ticket?.status === 'ok') {
+            delivered += 1
+          } else if (ticket?.details?.error === 'DeviceNotRegistered') {
+            const subscription = recipients[index]
+            if (subscription) await databaseStore.deleteMobilePushSubscription(subscription.id)
+          }
+        }
+      } catch (error) {
+        console.error('Expo push notification failed:', error?.message || error)
       }
-    }),
-  )
+    }
+  }
   return delivered
 }
 
@@ -1119,6 +1172,7 @@ app.get('/api/health', (_req, res) => {
     database: databaseStore ? 'mysql' : 'memory',
     databaseTarget: isMysqlEnabled() ? databaseLabel() : null,
     pushNotifications: pushEnabled && Boolean(databaseStore),
+    mobilePushNotifications: Boolean(databaseStore?.upsertMobilePushSubscription),
     emailMfa: {
       required: mfaRequired,
       configured: emailMfaConfigured && Boolean(databaseStore),
@@ -1280,9 +1334,14 @@ app.get('/api/bootstrap', requireAuth, asyncHandler(async (req, res) => {
     return res.status(401).json({ message: 'Session user no longer exists. Please sign in again.' })
   }
   account = await ensureVendorProfileForAccount(account)
+  const visibleVendors = account.role === 'customer'
+    ? vendors.filter(isCustomerVisibleVendor)
+    : account.role === 'vendor'
+      ? vendors.filter((vendor) => vendor.id === account.vendorId)
+      : vendors
   res.json({
-    vendors,
-    bookings,
+    vendors: visibleVendors,
+    bookings: bookingsVisibleTo(publicUser(account)),
     addOns,
     user: publicUser(account),
   })
@@ -1369,6 +1428,34 @@ app.post('/api/push/test', requireAuth, asyncHandler(async (req, res) => {
     { userIds: [req.user.id] },
   )
   res.json({ delivered })
+}))
+
+app.post('/api/push/mobile/subscribe', requireAuth, asyncHandler(async (req, res) => {
+  if (!databaseStore?.upsertMobilePushSubscription) {
+    return res.status(503).json({ message: 'Mobile push storage requires the MySQL backend' })
+  }
+  const input = parseBody(mobilePushSubscriptionSchema, req, res)
+  if (!input) return
+  const id = `MPUSH-${crypto.createHash('sha256').update(input.expoPushToken).digest('hex').slice(0, 36)}`
+  await databaseStore.upsertMobilePushSubscription({
+    id,
+    userId: req.user.id,
+    userRole: req.user.role,
+    vendorId: req.user.vendorId,
+    expoPushToken: input.expoPushToken,
+    platform: input.platform,
+  })
+  res.status(201).json({ subscribed: true })
+}))
+
+app.delete('/api/push/mobile/subscribe', requireAuth, asyncHandler(async (req, res) => {
+  if (!databaseStore?.deleteMobilePushSubscriptionByToken) {
+    return res.status(503).json({ message: 'Mobile push storage requires the MySQL backend' })
+  }
+  const input = parseBody(mobilePushTokenSchema, req, res)
+  if (!input) return
+  await databaseStore.deleteMobilePushSubscriptionByToken(input.expoPushToken, req.user.id)
+  res.json({ subscribed: false })
 }))
 
 app.post('/api/vendors/search', requireAuth, (req, res) => {
@@ -1607,7 +1694,7 @@ app.post('/api/vendors/:vendorId/packages', requireAuth, asyncHandler(async (req
   }
 
   vendor.packages = [...vendor.packages, packageToAdd]
-  vendor.minPrice = Math.min(vendor.minPrice, pricePerGuest)
+  vendor.minPrice = vendor.minPrice > 0 ? Math.min(vendor.minPrice, pricePerGuest) : pricePerGuest
 
   publishEvent('Package added', `${packageToAdd.title} was added to ${vendor.name}.`, {
     vendorId: vendor.id,
@@ -1618,10 +1705,12 @@ app.post('/api/vendors/:vendorId/packages', requireAuth, asyncHandler(async (req
 }))
 
 app.post('/api/bookings', requireAuth, asyncHandler(async (req, res) => {
+  if (req.user.role !== 'customer') return res.status(403).json({ message: 'Customer role required' })
   const { vendorId, packageId, eventType, date, guests, addOns: addOnIds = [], note = '', paymentChoice = 'deposit', mode = 'quote' } =
     req.body
   const { vendor, caterPackage } = findVendorAndPackage(vendorId, packageId)
   if (!vendor || !caterPackage) return res.status(404).json({ message: 'Vendor package not found' })
+  if (!isCustomerVisibleVendor(vendor)) return res.status(409).json({ message: 'This vendor is not currently available for booking' })
   if (!date || Number(guests) < caterPackage.minGuests) {
     return res.status(400).json({ message: `Minimum guest count is ${caterPackage.minGuests}` })
   }
@@ -1629,6 +1718,7 @@ app.post('/api/bookings', requireAuth, asyncHandler(async (req, res) => {
   const amount = calculateBookingTotal({ vendorId, packageId, guests, addOnIds })
   const booking = {
     id: makeId('BK'),
+    customerId: req.user.id,
     vendorId,
     packageId,
     customerName: req.user.name || 'Customer',
@@ -1650,6 +1740,18 @@ app.post('/api/bookings', requireAuth, asyncHandler(async (req, res) => {
   }
 
   bookings = [booking, ...bookings]
+  if (mode === 'instant') {
+    payments.push({
+      id: makeId('PAY'),
+      bookingId: booking.id,
+      amount: booking.deposit,
+      currency: 'INR',
+      status: 'succeeded',
+      provider: 'FeastFlowPay Sandbox',
+      createdAt: booking.createdAt,
+      confirmedAt: booking.createdAt,
+    })
+  }
   publishEvent(mode === 'instant' ? 'Booking confirmed' : 'Quote request sent', `${booking.id} with ${vendor.name}`, {
     bookingId: booking.id,
     url: '/',
@@ -1661,9 +1763,10 @@ app.post('/api/bookings', requireAuth, asyncHandler(async (req, res) => {
 app.post('/api/bookings/:bookingId/messages', requireAuth, asyncHandler(async (req, res) => {
   const booking = bookings.find((item) => item.id === req.params.bookingId)
   if (!booking) return res.status(404).json({ message: 'Booking not found' })
+  if (!canAccessBooking(req.user, booking)) return res.status(403).json({ message: 'You cannot access this booking' })
 
   const text = String(req.body.text || '').trim()
-  const from = req.body.from === 'vendor' ? 'vendor' : req.body.from === 'admin' ? 'admin' : 'customer'
+  const from = req.user.role
   if (!text) return res.status(400).json({ message: 'Message text is required' })
 
   booking.messages.push({ from, text, time: nowTime() })
@@ -1671,7 +1774,7 @@ app.post('/api/bookings/:bookingId/messages', requireAuth, asyncHandler(async (r
     'New chat message',
     `${booking.id}: ${text}`,
     { bookingId: booking.id, url: '/' },
-    from === 'customer' ? { vendorIds: [booking.vendorId] } : { roles: ['customer'] },
+    from === 'customer' ? { vendorIds: [booking.vendorId] } : bookingCustomerAudience(booking),
   )
   await saveState()
   res.json({ booking })
@@ -1680,6 +1783,9 @@ app.post('/api/bookings/:bookingId/messages', requireAuth, asyncHandler(async (r
 app.post('/api/bookings/:bookingId/vendor-decision', requireAuth, asyncHandler(async (req, res) => {
   const booking = bookings.find((item) => item.id === req.params.bookingId)
   if (!booking) return res.status(404).json({ message: 'Booking not found' })
+  if (req.user.role !== 'vendor' || req.user.vendorId !== booking.vendorId) {
+    return res.status(403).json({ message: 'This booking belongs to another vendor' })
+  }
 
   const decision = req.body.decision
   if (decision === 'decline') {
@@ -1701,7 +1807,7 @@ app.post('/api/bookings/:bookingId/vendor-decision', requireAuth, asyncHandler(a
     booking.messages.push({ from: 'vendor', text: 'We accepted the request. Payment link is ready.', time: nowTime() })
   }
 
-  publishEvent('Vendor response saved', `${booking.id} is now ${booking.status}.`, { bookingId: booking.id, url: '/' }, { roles: ['customer'] })
+  publishEvent('Vendor response saved', `${booking.id} is now ${booking.status}.`, { bookingId: booking.id, url: '/' }, bookingCustomerAudience(booking))
   await saveState()
   res.json({ booking })
 }))
@@ -1709,6 +1815,9 @@ app.post('/api/bookings/:bookingId/vendor-decision', requireAuth, asyncHandler(a
 app.post('/api/payments/intent', requireAuth, asyncHandler(async (req, res) => {
   const booking = bookings.find((item) => item.id === req.body.bookingId)
   if (!booking) return res.status(404).json({ message: 'Booking not found' })
+  if (req.user.role !== 'customer' || !canAccessBooking(req.user, booking)) {
+    return res.status(403).json({ message: 'You cannot pay for this booking' })
+  }
 
   const amount = booking.paymentChoice === 'full' ? booking.amount : Math.ceil(booking.amount * 0.3)
   const payment = {
@@ -1730,6 +1839,9 @@ app.post('/api/payments/:paymentId/confirm', requireAuth, asyncHandler(async (re
   if (!payment) return res.status(404).json({ message: 'Payment intent not found' })
   const booking = bookings.find((item) => item.id === payment.bookingId)
   if (!booking) return res.status(404).json({ message: 'Booking not found' })
+  if (req.user.role !== 'customer' || !canAccessBooking(req.user, booking)) {
+    return res.status(403).json({ message: 'You cannot confirm this payment' })
+  }
 
   payment.status = 'succeeded'
   payment.confirmedAt = new Date().toISOString()
@@ -1745,9 +1857,12 @@ app.post('/api/payments/:paymentId/confirm', requireAuth, asyncHandler(async (re
 app.post('/api/bookings/:bookingId/complete', requireAuth, asyncHandler(async (req, res) => {
   const booking = bookings.find((item) => item.id === req.params.bookingId)
   if (!booking) return res.status(404).json({ message: 'Booking not found' })
+  if (req.user.role !== 'admin' && (req.user.role !== 'vendor' || req.user.vendorId !== booking.vendorId)) {
+    return res.status(403).json({ message: 'Vendor or admin role required for this booking' })
+  }
   booking.status = 'completed'
   booking.timeline.push('Service delivered', 'Marked completed')
-  publishEvent('Booking completed', `${booking.id} was marked completed.`, { bookingId: booking.id })
+  publishEvent('Booking completed', `${booking.id} was marked completed.`, { bookingId: booking.id, url: '/' }, bookingCustomerAudience(booking))
   await saveState()
   res.json({ booking })
 }))
@@ -1755,9 +1870,12 @@ app.post('/api/bookings/:bookingId/complete', requireAuth, asyncHandler(async (r
 app.post('/api/bookings/:bookingId/review', requireAuth, asyncHandler(async (req, res) => {
   const booking = bookings.find((item) => item.id === req.params.bookingId)
   if (!booking) return res.status(404).json({ message: 'Booking not found' })
+  if (req.user.role !== 'customer' || !canAccessBooking(req.user, booking)) {
+    return res.status(403).json({ message: 'You cannot review this booking' })
+  }
   booking.review = { rating: Number(req.body.rating || 5), text: String(req.body.text || 'Great service and food quality.') }
   if (!booking.timeline.includes('Review submitted')) booking.timeline.push('Review submitted')
-  publishEvent('Review submitted', `${booking.id} received a customer review.`, { bookingId: booking.id })
+  publishEvent('Review submitted', `${booking.id} received a customer review.`, { bookingId: booking.id, url: '/' }, { vendorIds: [booking.vendorId] })
   await saveState()
   res.json({ booking })
 }))
