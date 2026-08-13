@@ -11,6 +11,8 @@ services:
         value: mysql
       - key: DATABASE_URL
         sync: false
+      - key: MYSQL_CREATE_DATABASE
+        value: "true"
       - key: MYSQL_SSL
         value: "true"
       - key: MYSQL_SSL_REJECT_UNAUTHORIZED
