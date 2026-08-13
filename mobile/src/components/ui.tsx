@@ -69,6 +69,13 @@ export function Button({
   busy?: boolean
   compact?: boolean
 }) {
+  const variantStyle = {
+    primary: styles.button_primary,
+    secondary: styles.button_secondary,
+    danger: styles.button_danger,
+    ghost: styles.button_ghost,
+  }[variant]
+
   return (
     <Pressable
       accessibilityRole="button"
@@ -77,7 +84,7 @@ export function Button({
       style={({ pressed }) => [
         styles.button,
         compact && styles.buttonCompact,
-        styles[`button_${variant}` as keyof typeof styles],
+        variantStyle,
         (disabled || busy) && styles.buttonDisabled,
         pressed && !(disabled || busy) && styles.buttonPressed,
       ]}
@@ -150,11 +157,24 @@ export function StatusPill({ status }: { status: string }) {
     : status === 'rejected' || status === 'declined'
       ? 'bad'
       : status === 'needs-info' || status === 'countered'
-        ? 'info'
-        : 'warn'
+      ? 'info'
+      : 'warn'
+  const pillStyle = {
+    good: styles.status_good,
+    bad: styles.status_bad,
+    info: styles.status_info,
+    warn: styles.status_warn,
+  }[tone]
+  const textStyle = {
+    good: styles.statusText_good,
+    bad: styles.statusText_bad,
+    info: styles.statusText_info,
+    warn: styles.statusText_warn,
+  }[tone]
+
   return (
-    <View style={[styles.statusPill, styles[`status_${tone}` as keyof typeof styles]]}>
-      <Text style={[styles.statusText, styles[`statusText_${tone}` as keyof typeof styles]]}>{status.replace(/-/g, ' ')}</Text>
+    <View style={[styles.statusPill, pillStyle]}>
+      <Text style={[styles.statusText, textStyle]}>{status.replace(/-/g, ' ')}</Text>
     </View>
   )
 }
@@ -212,8 +232,14 @@ export function Sheet({ visible, title, onClose, children }: { visible: boolean;
 
 export function Notice({ tone = 'info', text }: { tone?: 'info' | 'error' | 'success'; text: string }) {
   const icon: IconName = tone === 'error' ? 'alert-circle-outline' : tone === 'success' ? 'checkmark-circle-outline' : 'information-circle-outline'
+  const toneStyle = {
+    info: styles.notice_info,
+    error: styles.notice_error,
+    success: styles.notice_success,
+  }[tone]
+
   return (
-    <View style={[styles.notice, styles[`notice_${tone}` as keyof typeof styles]]}>
+    <View style={[styles.notice, toneStyle]}>
       <Ionicons name={icon} size={19} color={tone === 'error' ? colors.red : tone === 'success' ? colors.greenDark : colors.teal} />
       <Text style={styles.noticeText}>{text}</Text>
     </View>
