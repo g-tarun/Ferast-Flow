@@ -80,6 +80,11 @@ const mobilePushSubscriptionSchema = z.object({
   platform: z.enum(['android', 'ios']),
 })
 const mobilePushTokenSchema = mobilePushSubscriptionSchema.pick({ expoPushToken: true })
+const publicVendorSearchSchema = z.object({
+  eventType: z.enum(['wedding', 'kitty-party', 'half-saree', 'housewarming', 'corporate', 'other']),
+  pincode: z.string().trim().regex(/^\d{6}$/, 'Enter a valid 6-digit pincode'),
+  guests: z.coerce.number().int().min(1, 'Enter at least one guest').max(5000, 'Guest count is too large'),
+})
 
 const parseBody = (schema, req, res) => {
   const result = schema.safeParse(req.body)
@@ -947,6 +952,95 @@ const hasRejectedDocument = (vendor) =>
 
 const isCustomerVisibleVendor = (vendor) => vendor.status === 'approved' && !hasRejectedDocument(vendor)
 
+const publicVendorId = (vendorId) =>
+  crypto
+    .createHmac('sha256', jwtSecret)
+    .update(`public-vendor:${vendorId}`)
+    .digest('hex')
+    .slice(0, 16)
+
+const publicProfileTitles = [
+  'Signature Celebration Team',
+  'Grand Gathering Specialist',
+  'Festive Table Favourite',
+  'Premium Event Kitchen',
+  'Celebration Menu Expert',
+  'Trusted Banquet Team',
+  'Gathering Day Favourite',
+  'FeastFlow Signature Partner',
+]
+
+const publicProfileTitle = (opaqueId) =>
+  publicProfileTitles[Number.parseInt(opaqueId.slice(0, 8), 16) % publicProfileTitles.length]
+
+const publicEventDetails = {
+  wedding: {
+    label: 'Wedding',
+    vendorEvents: ['Wedding'],
+    image: '/images/event-wedding.webp',
+  },
+  'kitty-party': {
+    label: 'Kitty party',
+    vendorEvents: ['House party'],
+    image: '/images/event-kitty-party.webp',
+  },
+  'half-saree': {
+    label: 'Half saree function',
+    vendorEvents: ['Festival', 'Wedding'],
+    image: '/images/event-half-saree.webp',
+  },
+  housewarming: {
+    label: 'Housewarming',
+    vendorEvents: ['House party', 'Festival'],
+    image: '/images/event-housewarming.webp',
+  },
+  corporate: {
+    label: 'Corporate event',
+    vendorEvents: ['Corporate', 'Launch'],
+    image: '/images/event-corporate.webp',
+  },
+  other: {
+    label: 'Other event',
+    vendorEvents: ['Wedding', 'Corporate', 'House party', 'Festival', 'Launch'],
+    image: '/images/event-other.webp',
+  },
+}
+
+const toPublicVendorCard = (vendor, eventType) => {
+  const event = publicEventDetails[eventType]
+  const opaqueId = publicVendorId(vendor.id)
+  const publicBadgeAllowlist = new Set([
+    'Verified',
+    'Instant book',
+    'Top rated',
+    'Fast response',
+    'Regional specialist',
+    'Seafood specialist',
+    'Large events',
+  ])
+  return {
+    publicId: opaqueId,
+    alias: publicProfileTitle(opaqueId),
+    cuisine: vendor.cuisine,
+    rating: vendor.rating,
+    reviewCount: vendor.reviewCount,
+    responseMinutes: vendor.responseMinutes,
+    minPrice: vendor.minPrice,
+    maxGuests: vendor.maxGuests,
+    dietary: vendor.dietary,
+    badges: vendor.badges.filter((badge) => publicBadgeAllowlist.has(badge)),
+    image: event.image,
+    eventLabel: event.label,
+    menuHighlights: vendor.packages.slice(0, 3).map((caterPackage, index) => ({
+      title: `${event.label} menu ${index + 1}`,
+      pricePerGuest: caterPackage.pricePerGuest,
+      minGuests: caterPackage.minGuests,
+      itemCount: caterPackage.items.length,
+      instantBook: caterPackage.instantBook,
+    })),
+  }
+}
+
 const vendorDocumentCount = (vendor) => Object.values(vendor.documents || {}).filter(Boolean).length
 
 const vendorIdentityKey = (vendor) => {
@@ -1327,6 +1421,33 @@ app.post('/api/auth/mfa/resend', rateLimit({
   }
 }))
 
+app.post('/api/public/vendors/search', rateLimit({
+  scope: 'public-vendor-search',
+  limit: 80,
+  windowMs: 5 * 60_000,
+}), asyncHandler(async (req, res) => {
+  const input = parseBody(publicVendorSearchSchema, req, res)
+  if (!input) return
+
+  await reloadStateFromDatabase()
+  const event = publicEventDetails[input.eventType]
+  const results = vendors
+    .filter(isCustomerVisibleVendor)
+    .filter((vendor) => vendor.pincode === input.pincode || vendor.servicePincodes.includes(input.pincode))
+    .filter((vendor) => event.vendorEvents.some((eventName) => vendor.eventTypes.includes(eventName)))
+    .filter((vendor) => vendor.maxGuests >= input.guests)
+    .sort((first, second) => second.rating - first.rating || first.minPrice - second.minPrice)
+    .map((vendor) => toPublicVendorCard(vendor, input.eventType))
+
+  res.json({
+    vendors: results,
+    count: results.length,
+    event: event.label,
+    pincode: input.pincode,
+    guests: input.guests,
+  })
+}))
+
 app.get('/api/bootstrap', requireAuth, asyncHandler(async (req, res) => {
   await reloadStateFromDatabase()
   let account = await findAccountById(req.user.id)
@@ -1340,7 +1461,7 @@ app.get('/api/bootstrap', requireAuth, asyncHandler(async (req, res) => {
       ? vendors.filter((vendor) => vendor.id === account.vendorId)
       : vendors
   res.json({
-    vendors: visibleVendors,
+    vendors: visibleVendors.map((vendor) => ({ ...vendor, publicId: publicVendorId(vendor.id) })),
     bookings: bookingsVisibleTo(publicUser(account)),
     addOns,
     user: publicUser(account),

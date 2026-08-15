@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ChangeEvent, FormEvent, PointerEvent as ReactPointerEvent, ReactElement } from 'react'
+import type { ChangeEvent, CSSProperties, FormEvent, PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import {
   AlertCircle,
+  ArrowLeft,
+  ArrowRight,
   BadgeCheck,
   Bell,
   BellRing,
@@ -17,22 +19,27 @@ import {
   EyeOff,
   FileCheck2,
   FileText,
+  Heart,
+  Home,
   KeyRound,
   LogOut,
   MapPin,
   MessageCircle,
   PackagePlus,
+  PartyPopper,
   RefreshCw,
   Search,
   Send,
   ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
   Star,
   Store,
   Trash2,
   UploadCloud,
   UserRound,
   Users,
+  Utensils,
   Volume2,
   VolumeX,
   Wallet,
@@ -97,6 +104,7 @@ type GeoPoint = {
 
 type Vendor = {
   id: string
+  publicId?: string
   name: string
   owner: string
   status: VendorStatus
@@ -123,6 +131,43 @@ type Vendor = {
   availability: string[]
   payoutDue: number
   adminNote?: string
+}
+
+type PublicEventType = 'wedding' | 'kitty-party' | 'half-saree' | 'housewarming' | 'corporate' | 'other'
+type PublicAccessMode = Role
+
+type PublicMenuHighlight = {
+  title: string
+  pricePerGuest: number
+  minGuests: number
+  itemCount: number
+  instantBook: boolean
+}
+
+type PublicVendor = {
+  publicId: string
+  alias: string
+  cuisine: string
+  rating: number
+  reviewCount: number
+  responseMinutes: number
+  minPrice: number
+  maxGuests: number
+  dietary: string[]
+  badges: string[]
+  image: string
+  eventLabel: string
+  menuHighlights: PublicMenuHighlight[]
+}
+
+type PublicSelection = {
+  publicId: string
+  alias: string
+  eventType: PublicEventType
+  pincode: string
+  guests: number
+  perPlate: number
+  estimatedTotal: number
 }
 
 type Booking = {
@@ -238,6 +283,79 @@ const landingHeroImage = '/images/feastflow-landing-v2.webp'
 const weddingImage = versionedDemoImage('/images/wedding-buffet.png')
 const corporateImage = versionedDemoImage('/images/corporate-lunch.png')
 const dessertImage = versionedDemoImage('/images/dessert-station.png')
+const publicEventOptions: Array<{
+  id: PublicEventType
+  label: string
+  eyebrow: string
+  headline: string
+  description: string
+  image: string
+  marketplaceEvent: string
+  marketplaceEvents: string[]
+}> = [
+  {
+    id: 'wedding',
+    label: 'Wedding',
+    eyebrow: 'A feast worthy of the vows',
+    headline: 'Make the table as memorable as the day.',
+    description: 'Discover verified teams for intimate ceremonies, grand receptions, and everything between.',
+    image: '/images/event-wedding.webp',
+    marketplaceEvent: 'Wedding',
+    marketplaceEvents: ['Wedding'],
+  },
+  {
+    id: 'kitty-party',
+    label: 'Kitty party',
+    eyebrow: 'Easy hosting, lively tables',
+    headline: 'Bring the group. We will bring the flavour.',
+    description: 'Find flexible menus, delightful small plates, and service that lets the host join the fun.',
+    image: '/images/event-kitty-party.webp',
+    marketplaceEvent: 'House party',
+    marketplaceEvents: ['House party'],
+  },
+  {
+    id: 'half-saree',
+    label: 'Half saree',
+    eyebrow: 'Tradition, served beautifully',
+    headline: 'Celebrate her milestone with a generous feast.',
+    description: 'Compare regional specialists prepared for traditional menus, family service, and larger guest lists.',
+    image: '/images/event-half-saree.webp',
+    marketplaceEvent: 'Festival',
+    marketplaceEvents: ['Festival', 'Wedding'],
+  },
+  {
+    id: 'housewarming',
+    label: 'Housewarming',
+    eyebrow: 'A warm welcome to a new beginning',
+    headline: 'Fill the new home with people, stories, and good food.',
+    description: 'Book dependable caterers for puja breakfasts, family lunches, and relaxed evening gatherings.',
+    image: '/images/event-housewarming.webp',
+    marketplaceEvent: 'House party',
+    marketplaceEvents: ['House party', 'Festival'],
+  },
+  {
+    id: 'corporate',
+    label: 'Corporate',
+    eyebrow: 'Professional service, without the fuss',
+    headline: 'Keep the agenda moving and every guest well served.',
+    description: 'Explore teams built for office lunches, launches, offsites, and high-volume service.',
+    image: '/images/event-corporate.webp',
+    marketplaceEvent: 'Corporate',
+    marketplaceEvents: ['Corporate', 'Launch'],
+  },
+  {
+    id: 'other',
+    label: 'Other event',
+    eyebrow: 'Your occasion, your way',
+    headline: 'Tell us the gathering. We will shape the feast.',
+    description: 'From birthdays and anniversaries to reunions and community events, find a team that fits the moment.',
+    image: '/images/event-other.webp',
+    marketplaceEvent: 'Any',
+    marketplaceEvents: ['Wedding', 'Corporate', 'House party', 'Festival', 'Launch'],
+  },
+]
+const publicEventOptionById = (eventType: PublicEventType) =>
+  publicEventOptions.find((option) => option.id === eventType) ?? publicEventOptions[0]
 const displayImageSrc = (image?: string) => {
   if (!image) return heroImage
   if (image.startsWith('/images/') && !image.includes('?')) return versionedDemoImage(image)
@@ -993,7 +1111,13 @@ function Metric({
   )
 }
 
-function FeastDepthScene({ variant }: { variant: 'auth' | 'discovery' }) {
+function FeastDepthScene({
+  variant,
+  image = landingHeroImage,
+}: {
+  variant: 'auth' | 'discovery'
+  image?: string
+}) {
   const mountRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -1030,7 +1154,7 @@ function FeastDepthScene({ variant }: { variant: 'auth' | 'discovery' }) {
 
       const loader = new THREE.TextureLoader()
       loader.load(
-        landingHeroImage,
+        image,
         (texture) => {
           if (cancelled || !mount.isConnected) {
             texture.dispose()
@@ -1194,13 +1318,337 @@ function FeastDepthScene({ variant }: { variant: 'auth' | 'discovery' }) {
       cancelled = true
       teardown()
     }
-  }, [variant])
+  }, [image, variant])
 
   return <div ref={mountRef} className={`feast-depth-scene feast-depth-scene-${variant}`} aria-hidden="true" />
 }
 
+function PublicEventIcon({ eventType }: { eventType: PublicEventType }) {
+  if (eventType === 'wedding') return <Heart size={20} aria-hidden="true" />
+  if (eventType === 'kitty-party') return <PartyPopper size={20} aria-hidden="true" />
+  if (eventType === 'half-saree') return <Sparkles size={20} aria-hidden="true" />
+  if (eventType === 'housewarming') return <Home size={20} aria-hidden="true" />
+  if (eventType === 'corporate') return <Users size={20} aria-hidden="true" />
+  return <CalendarDays size={20} aria-hidden="true" />
+}
+
+function PublicDiscovery({
+  onCustomerSignIn,
+  onVendorSignIn,
+  onAdminSignIn,
+  onSelect,
+}: {
+  onCustomerSignIn: () => void
+  onVendorSignIn: () => void
+  onAdminSignIn: () => void
+  onSelect: (selection: PublicSelection) => void
+}) {
+  const [eventType, setEventType] = useState<PublicEventType | null>(null)
+  const [pincode, setPincode] = useState('')
+  const [vendors, setVendors] = useState<PublicVendor[] | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [searchError, setSearchError] = useState('')
+  const [guestOption, setGuestOption] = useState<'20' | '30' | '40' | 'custom'>('20')
+  const [customGuests, setCustomGuests] = useState('60')
+  const resultsRef = useRef<HTMLElement>(null)
+  const activeEvent = eventType ? publicEventOptionById(eventType) : publicEventOptions[0]
+  const popularPincodes = ['560001', '560034', '560038', '560041', '560066']
+  const guestCount = guestOption === 'custom'
+    ? Math.min(Number(customGuests) || 0, 5000)
+    : Number(guestOption)
+
+  useEffect(() => {
+    publicEventOptions.forEach((option) => {
+      const preload = new Image()
+      preload.decoding = 'async'
+      preload.src = option.image
+      void preload.decode?.().catch(() => undefined)
+    })
+  }, [])
+
+  const chooseEvent = (nextEvent: PublicEventType) => {
+    setEventType(nextEvent)
+    setVendors(null)
+    setSearchError('')
+  }
+
+  const searchPublicVendors = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!eventType) {
+      setSearchError('Choose an event before searching.')
+      return
+    }
+    if (!/^\d{6}$/.test(pincode)) {
+      setSearchError('Enter a valid 6-digit pincode.')
+      return
+    }
+
+    setSearching(true)
+    setSearchError('')
+    try {
+      const response = await apiRequest<{ vendors: PublicVendor[]; count: number }>(
+        '/public/vendors/search',
+        { body: { eventType, pincode, guests: guestCount } },
+      )
+      setVendors(response.vendors)
+      window.setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80)
+    } catch (apiError) {
+      setVendors(null)
+      setSearchError(apiError instanceof Error ? apiError.message : 'Caterers could not be loaded.')
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  return (
+    <main className="public-discovery">
+      <section className="public-hero">
+        <div className="public-hero-media" key={activeEvent.image} aria-hidden="true">
+          <img src={activeEvent.image} alt="" />
+        </div>
+        <header className="public-topbar">
+          <button className="public-brand" type="button" aria-label="FeastFlow home">
+            <span className="public-brand-mark"><ChefHat size={23} aria-hidden="true" /></span>
+            <span><strong>FeastFlow</strong><small>Catering marketplace</small></span>
+          </button>
+          <div className="public-access-actions">
+            <button
+              className="public-vendor-access"
+              type="button"
+              onClick={onVendorSignIn}
+              aria-label="Vendor login"
+              title="Vendor login"
+            >
+              <Store size={17} aria-hidden="true" />
+              <span>Vendor</span>
+            </button>
+            <button
+              className="public-admin-access"
+              type="button"
+              onClick={onAdminSignIn}
+              aria-label="Admin login"
+              title="Admin login"
+            >
+              <ShieldCheck size={17} aria-hidden="true" />
+              <span>Admin</span>
+            </button>
+            <button
+              className="public-signin"
+              type="button"
+              onClick={onCustomerSignIn}
+              aria-label="Customer sign in"
+              title="Customer sign in"
+            >
+              <UserRound size={18} aria-hidden="true" />
+              <span>Customer sign in</span>
+            </button>
+          </div>
+        </header>
+
+        <div className="public-hero-content" key={eventType ?? 'welcome'}>
+          <p className="public-kicker">{eventType ? activeEvent.eyebrow : 'Welcome to FeastFlow'}</p>
+          <h1>{eventType ? activeEvent.headline : 'What are you celebrating?'}</h1>
+          <p>
+            {eventType
+              ? activeEvent.description
+              : 'Start with the occasion. We will shape the search around the kind of gathering you have in mind.'}
+          </p>
+        </div>
+
+        <div className="public-journey" aria-label="Find a caterer">
+          <div className="public-step-heading">
+            <span>1</span>
+            <div><strong>Choose your event</strong><small>The experience changes with your celebration.</small></div>
+          </div>
+          <div className="public-event-options" role="list">
+            {publicEventOptions.map((option) => (
+              <button
+                key={option.id}
+                className={eventType === option.id ? 'active' : ''}
+                type="button"
+                onClick={() => chooseEvent(option.id)}
+                aria-pressed={eventType === option.id}
+              >
+                <PublicEventIcon eventType={option.id} />
+                <span>{option.label}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="public-guest-step">
+            <div className="public-step-heading">
+              <span>2</span>
+              <div><strong>How many guests?</strong><small>We will only show caterers with enough capacity.</small></div>
+            </div>
+            <div className="public-guest-options" role="group" aria-label="Guest count">
+              {(['20', '30', '40'] as const).map((option) => (
+                <button
+                  key={option}
+                  className={guestOption === option ? 'active' : ''}
+                  type="button"
+                  onClick={() => setGuestOption(option)}
+                  aria-pressed={guestOption === option}
+                >
+                  {option} guests
+                </button>
+              ))}
+              <button
+                className={guestOption === 'custom' ? 'active' : ''}
+                type="button"
+                onClick={() => setGuestOption('custom')}
+                aria-pressed={guestOption === 'custom'}
+              >
+                Custom
+              </button>
+              {guestOption === 'custom' && (
+                <label className="public-custom-guests">
+                  <span>Guests</span>
+                  <input
+                    inputMode="numeric"
+                    maxLength={4}
+                    min={1}
+                    max={5000}
+                    type="number"
+                    value={customGuests}
+                    onChange={(event) => setCustomGuests(event.target.value.replace(/\D/g, '').slice(0, 4))}
+                  />
+                </label>
+              )}
+            </div>
+          </div>
+
+          <form className={`public-pincode-step ${eventType ? 'ready' : ''}`} onSubmit={searchPublicVendors}>
+            <div className="public-step-heading">
+              <span>3</span>
+              <div><strong>Where is the event?</strong><small>See caterers that actively serve your pincode.</small></div>
+            </div>
+            <div className="public-pincode-control">
+              <MapPin size={19} aria-hidden="true" />
+              <input
+                aria-label="Event pincode"
+                inputMode="numeric"
+                maxLength={6}
+                placeholder={eventType ? 'Enter 6-digit pincode' : 'Choose an event first'}
+                value={pincode}
+                disabled={!eventType}
+                onChange={(event) => setPincode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+              />
+              <button type="submit" disabled={!eventType || searching || pincode.length !== 6 || guestCount < 1}>
+                <Search size={18} aria-hidden="true" />
+                {searching ? 'Searching...' : 'Show caterers'}
+              </button>
+            </div>
+            {eventType && (
+              <div className="public-pincode-suggestions" aria-label="Popular service pincodes">
+                <span>Popular:</span>
+                {popularPincodes.map((value) => (
+                  <button key={value} type="button" onClick={() => setPincode(value)}>{value}</button>
+                ))}
+              </div>
+            )}
+            {searchError && <p className="public-search-error" role="alert"><AlertCircle size={16} />{searchError}</p>}
+          </form>
+        </div>
+      </section>
+
+      {vendors !== null && (
+        <section className="public-results" ref={resultsRef} aria-live="polite">
+          <div className="public-results-head">
+            <div>
+              <p className="eyebrow">Handpicked for your {activeEvent.label.toLowerCase()}</p>
+              <h2>{vendors.length ? `${vendors.length} celebration ${vendors.length === 1 ? 'team' : 'teams'} ready for ${guestCount} guests` : `No exact matches in ${pincode}`}</h2>
+              <p>{vendors.length ? 'Compare the essentials now. Meet your favourite team, explore every menu, and check your date with one quick sign-in.' : 'Try another nearby pincode or a different event type.'}</p>
+            </div>
+            {vendors.length > 0 && <span className="public-protection"><Sparkles size={17} />Curated by FeastFlow</span>}
+          </div>
+
+          {vendors.length > 0 && (
+            <div className="public-match-promises" aria-label="Why book with FeastFlow">
+              <span><BadgeCheck size={19} /><span><strong>Verified before you enquire</strong><small>Every team is reviewed by FeastFlow.</small></span></span>
+              <span><Utensils size={19} /><span><strong>Menus made for the moment</strong><small>See full packages after choosing your match.</small></span></span>
+              <span><CalendarDays size={19} /><span><strong>Your plan stays together</strong><small>Availability, quotes, chat, and payment in one place.</small></span></span>
+            </div>
+          )}
+
+          <div className="public-vendor-grid">
+            {vendors.map((vendor, index) => {
+              const estimatedTotal = vendor.minPrice * guestCount
+              const withinCapacity = guestCount > 0 && guestCount <= vendor.maxGuests
+              return (
+              <article className="public-vendor-card" key={vendor.publicId} style={{ '--card-index': index } as CSSProperties}>
+                <div className="public-vendor-image">
+                  <img src={vendor.image} alt={`${vendor.eventLabel} catering setup`} />
+                  <span><BadgeCheck size={16} />Handpicked for your event</span>
+                </div>
+                <div className="public-vendor-body">
+                  <div className="public-vendor-title">
+                    <div>
+                      <p className="public-vendor-code"><Sparkles size={14} />A FeastFlow celebration favourite</p>
+                      <h3>{vendor.alias}</h3>
+                      <p>{vendor.cuisine}</p>
+                    </div>
+                    <Rating value={vendor.rating} count={vendor.reviewCount} />
+                  </div>
+                  <div className="public-vendor-facts">
+                    <span><Clock3 size={16} />{vendor.responseMinutes} min response</span>
+                    <span><Users size={16} />Up to {vendor.maxGuests} guests</span>
+                    <span><Utensils size={16} />From {currency.format(vendor.minPrice)}/guest</span>
+                  </div>
+                  <div className="public-price-estimate" aria-label={`Estimated price for ${guestCount} guests`}>
+                    <div>
+                      <small>Starting per plate</small>
+                      <strong>{currency.format(vendor.minPrice)}</strong>
+                    </div>
+                    <span aria-hidden="true">x {guestCount || '-'}</span>
+                    <div>
+                      <small>Approx. food total</small>
+                      <strong>{guestCount ? currency.format(estimatedTotal) : 'Enter guests'}</strong>
+                    </div>
+                  </div>
+                  <p className="public-estimate-note">Starting estimate only. Final price changes with menu, service, taxes, and add-ons.</p>
+                  {vendor.menuHighlights[0] && (
+                    <div className="public-menu-preview">
+                      <div><strong>{vendor.menuHighlights[0].title}</strong><span>from {currency.format(vendor.menuHighlights[0].pricePerGuest)}/guest</span></div>
+                      <p>Minimum {vendor.menuHighlights[0].minGuests} guests · {vendor.menuHighlights[0].itemCount} menu inclusions · Full menu and live availability await</p>
+                    </div>
+                  )}
+                  <div className="public-vendor-footer">
+                    <div className="public-vendor-tags">
+                      {vendor.badges.slice(0, 2).map((badge) => <span key={badge}>{badge}</span>)}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!withinCapacity}
+                      onClick={() => onSelect({
+                        publicId: vendor.publicId,
+                        alias: vendor.alias,
+                        eventType: eventType!,
+                        pincode,
+                        guests: guestCount,
+                        perPlate: vendor.minPrice,
+                        estimatedTotal,
+                      })}
+                    >
+                      {guestCount > vendor.maxGuests ? `Capacity ${vendor.maxGuests}` : 'Meet this team'}
+                      <ArrowRight size={17} aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              </article>
+              )
+            })}
+          </div>
+        </section>
+      )}
+    </main>
+  )
+}
+
 function LoginPage({
   onAuthenticate,
+  selection,
+  accessMode,
+  onBackToDiscovery,
   mfaChallenge,
   onVerifyMfa,
   onResendMfa,
@@ -1215,6 +1663,9 @@ function LoginPage({
     email: string
     password: string
   }) => void
+  selection: PublicSelection | null
+  accessMode: PublicAccessMode
+  onBackToDiscovery: () => void
   mfaChallenge: MfaChallenge | null
   onVerifyMfa: (code: string) => void
   onResendMfa: () => void
@@ -1223,9 +1674,9 @@ function LoginPage({
   authError: string
 }) {
   const [mode, setMode] = useState<AuthMode>('login')
-  const [role, setRole] = useState<Role>('customer')
-  const [name, setName] = useState('Demo Customer')
-  const [email, setEmail] = useState(demoAccounts.customer.email)
+  const role: Role = selection ? 'customer' : accessMode
+  const [name, setName] = useState(demoAccounts[role].name)
+  const [email, setEmail] = useState(demoAccounts[role].email)
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [mfaCode, setMfaCode] = useState('')
@@ -1234,20 +1685,17 @@ function LoginPage({
     setMfaCode('')
   }, [mfaChallenge?.challengeId])
 
-  const selectRole = (nextRole: Role) => {
-    setRole(nextRole)
-    const account = demoAccounts[nextRole]
-    setName(account.name)
-    setEmail(account.email)
+  useEffect(() => {
+    setMode('login')
+    setName(demoAccounts[role].name)
+    setEmail(demoAccounts[role].email)
     setPassword('')
-  }
+    window.scrollTo({ top: 0, behavior: 'auto' })
+  }, [role, selection?.publicId])
 
   const selectMode = (nextMode: AuthMode) => {
+    if (role === 'admin') return
     setMode(nextMode)
-    if (nextMode === 'register' && role === 'admin') {
-      selectRole('customer')
-      return
-    }
     setPassword('')
   }
 
@@ -1261,28 +1709,35 @@ function LoginPage({
     onVerifyMfa(mfaCode)
   }
 
-  const availableRoles: Role[] = mode === 'register' ? ['customer', 'vendor'] : ['customer', 'vendor', 'admin']
   const canSubmit = Boolean(email.trim() && password.trim().length >= 8 && (mode === 'login' || name.trim()))
-  const roleDetails: Record<Role, { label: string; description: string; panelCopy: string; icon: ReactElement }> = {
+  const roleDetails: Record<Role, { eyebrow: string; loginTitle: string; registerTitle: string; panelCopy: string; heroTitle: string; heroCopy: string }> = {
     customer: {
-      label: 'Plan an event',
-      description: 'Find, compare, and book verified caterers.',
+      eyebrow: 'Customer account',
+      loginTitle: 'Welcome back to your celebrations',
+      registerTitle: 'Create your customer account',
       panelCopy: 'Bring trusted caterers, quotes, and every event detail into one calm workspace.',
-      icon: <UserRound size={20} aria-hidden="true" />,
+      heroTitle: 'Your next great table starts here.',
+      heroCopy: 'Save caterers, compare menus, coordinate details, and pay securely from one thoughtful place.',
     },
     vendor: {
-      label: 'Grow my business',
-      description: 'Manage menus, documents, and bookings.',
+      eyebrow: 'Vendor portal',
+      loginTitle: 'Welcome back, catering partner',
+      registerTitle: 'Register your catering business',
       panelCopy: 'Run onboarding, packages, requests, and bookings without losing the thread.',
-      icon: <Store size={20} aria-hidden="true" />,
+      heroTitle: 'Turn exceptional service into lasting growth.',
+      heroCopy: 'Manage verification, menus, enquiries, bookings, and payouts with a workspace built for caterers.',
     },
     admin: {
-      label: 'Review marketplace',
-      description: 'Verify vendors and oversee operations.',
+      eyebrow: 'Admin console',
+      loginTitle: 'Secure operations access',
+      registerTitle: 'Admin access',
       panelCopy: 'Review vendors, documents, and marketplace activity from one clear view.',
-      icon: <ShieldCheck size={20} aria-hidden="true" />,
+      heroTitle: 'Keep every marketplace promise accountable.',
+      heroCopy: 'Review vendor identity, documentation, customer activity, and operational alerts with protected access.',
     },
   }
+  const selectedEvent = selection ? publicEventOptionById(selection.eventType) : null
+  const authHeroImage = selectedEvent?.image ?? landingHeroImage
 
   const moveHero = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.pointerType === 'touch' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
@@ -1299,12 +1754,12 @@ function LoginPage({
   }
 
   return (
-    <main className="auth-page">
+    <main className={`auth-page auth-page-${role} ${selection ? 'auth-page-customer-selection' : ''}`}>
       <section className="auth-hero" onPointerMove={moveHero} onPointerLeave={resetHero}>
         <div className="auth-hero-media-wrap" aria-hidden="true">
-          <img className="auth-hero-media" src={landingHeroImage} alt="" />
+          <img className="auth-hero-media" src={authHeroImage} alt="" />
         </div>
-        <FeastDepthScene variant="auth" />
+        <FeastDepthScene key={authHeroImage} variant="auth" image={authHeroImage} />
         <div className="auth-brand">
           <span className="auth-brand-mark">
             <ChefHat size={22} aria-hidden="true" />
@@ -1321,13 +1776,22 @@ function LoginPage({
         </div>
 
         <div className="auth-copy">
-          <p className="eyebrow">Every detail, beautifully handled</p>
-          <h1>FeastFlow</h1>
-          <p className="auth-tagline">Great events start with the right table.</p>
-          <p className="auth-intro">
-            Discover trusted caterers, shape a menu guests will remember, and keep every quote,
-            conversation, and payment flowing in one place.
+          <p className="eyebrow">{selectedEvent ? `${selectedEvent.label} plan saved` : roleDetails[role].eyebrow}</p>
+          <h1>{selectedEvent ? 'Your celebration team is waiting at the table.' : roleDetails[role].heroTitle}</h1>
+          <p className="auth-tagline">
+            {selection ? `${selection.guests} guests in ${selection.pincode}` : 'Great events start with the right table.'}
           </p>
+          <p className="auth-intro">
+            {selection
+              ? `Your celebration shortlist is ready, with a starting estimate of ${currency.format(selection.estimatedTotal)}. Sign in to meet the team, explore every menu, and check your date.`
+              : roleDetails[role].heroCopy}
+          </p>
+          {selection && (
+            <div className="auth-selection-proof" aria-label="Saved catering estimate">
+              <span><small>Starting per plate</small><strong>{currency.format(selection.perPlate)}</strong></span>
+              <span><small>Starting food estimate</small><strong>{currency.format(selection.estimatedTotal)}</strong></span>
+            </div>
+          )}
           <div className="auth-proof" aria-label="Marketplace benefits">
             <span>
               <BadgeCheck size={17} aria-hidden="true" />
@@ -1356,7 +1820,25 @@ function LoginPage({
           </span>
         </div>
 
+        <button className="auth-back-discovery" type="button" onClick={onBackToDiscovery}>
+          <ArrowLeft size={17} aria-hidden="true" />
+          {selection ? 'Back to caterers' : 'Explore without signing in'}
+        </button>
+
         <div className="auth-card">
+        {selection && !mfaChallenge && (
+          <div className="auth-selection-context">
+            <span><Sparkles size={18} aria-hidden="true" /></span>
+            <div>
+              <small>Saved to your celebration shortlist</small>
+              <strong>{selection.alias}</strong>
+              <p>
+                {publicEventOptionById(selection.eventType).label} in {selection.pincode} for {selection.guests} guests,
+                starting near {currency.format(selection.estimatedTotal)}. Meet the team, view complete menus, and request your date after sign-in.
+              </p>
+            </div>
+          </div>
+        )}
         {mfaChallenge ? (
           <form className="auth-form auth-mfa-form" onSubmit={submitMfa}>
             <span className="auth-mfa-mark">
@@ -1408,13 +1890,21 @@ function LoginPage({
           <>
             <div className="auth-card-head">
               <div className="auth-heading-copy">
-                <p className="eyebrow">Your FeastFlow account</p>
-                <h2>{mode === 'login' ? 'Welcome back' : 'Join the table'}</h2>
+                <p className="eyebrow">
+                  {selection ? 'Secure customer access' : roleDetails[role].eyebrow}
+                </p>
+                <h2>
+                  {selection
+                    ? mode === 'login' ? 'Meet your shortlisted team' : 'Create your customer account'
+                    : mode === 'login' ? roleDetails[role].loginTitle : roleDetails[role].registerTitle}
+                </h2>
                 <p className="auth-role-context" key={`${mode}-${role}`} aria-live="polite">
-                  {roleDetails[role].panelCopy}
+                  {selection
+                    ? 'Your guest count, estimate, and favourite match are saved. Sign in to open the complete experience.'
+                    : roleDetails[role].panelCopy}
                 </p>
               </div>
-              <div className={`auth-toggle ${mode}`} aria-label="Authentication mode">
+              {role !== 'admin' && <div className={`auth-toggle ${mode}`} aria-label="Authentication mode">
                 <button
                   type="button"
                   className={mode === 'login' ? 'active' : ''}
@@ -1429,26 +1919,7 @@ function LoginPage({
                 >
                   Register
                 </button>
-              </div>
-            </div>
-
-            <div className="role-cards" aria-label="Choose role">
-              {availableRoles.map((item) => (
-                <button
-                  key={item}
-                  className={role === item ? 'selected' : ''}
-                  type="button"
-                  onClick={() => selectRole(item)}
-                  aria-pressed={role === item}
-                >
-                  <span className="role-card-icon">{roleDetails[item].icon}</span>
-                  <span className="role-card-copy">
-                    <strong>{roleDetails[item].label}</strong>
-                    <small>{roleDetails[item].description}</small>
-                  </span>
-                  <CheckCircle2 className="role-card-check" size={18} aria-hidden="true" />
-                </button>
-              ))}
+              </div>}
             </div>
 
             <form className="auth-form auth-form-enter" key={`${mode}-${role}`} onSubmit={submitAuth}>
@@ -1517,6 +1988,9 @@ function LoginPage({
 
 export default function App() {
   const [session, setSession] = useState<AuthSession | null>(() => getStoredSession())
+  const [publicAuthOpen, setPublicAuthOpen] = useState(false)
+  const [publicAccessMode, setPublicAccessMode] = useState<PublicAccessMode>('customer')
+  const [pendingPublicSelection, setPendingPublicSelection] = useState<PublicSelection | null>(null)
   const [authError, setAuthError] = useState('')
   const [authBusy, setAuthBusy] = useState(false)
   const [mfaChallenge, setMfaChallenge] = useState<MfaChallenge | null>(null)
@@ -1586,6 +2060,7 @@ export default function App() {
     setUnreadNotificationCount(0)
     setMfaChallenge(null)
     setAuthBusy(false)
+    setPublicAuthOpen(true)
     setAuthError(message)
     setToast(message)
   }
@@ -1748,9 +2223,40 @@ export default function App() {
         setSession((currentSession) =>
           currentSession ? { ...currentSession, user: data.user } : currentSession,
         )
-        setSearchResults(null)
+        const publicMatch = pendingPublicSelection && data.user.role === 'customer'
+          ? data.vendors.find((vendor) => vendor.publicId === pendingPublicSelection.publicId)
+          : undefined
+        if (publicMatch) {
+          const eventOption = publicEventOptionById(pendingPublicSelection.eventType)
+          const carriedVendors = data.vendors.filter((vendor) =>
+            (vendor.pincode === pendingPublicSelection.pincode || vendor.servicePincodes.includes(pendingPublicSelection.pincode)) &&
+            eventOption.marketplaceEvents.some((eventName) => vendor.eventTypes.includes(eventName)),
+          )
+          const carriedFilters: Filters = {
+            ...initialFilters,
+            location: pendingPublicSelection.pincode,
+            eventType: eventOption.marketplaceEvent,
+            guests: pendingPublicSelection.guests,
+          }
+          setFilters(carriedFilters)
+          setAppliedFilters(carriedFilters)
+          setSearchResults(carriedVendors)
+          setSelectedVendorId(publicMatch.id)
+          setSelectedPackageId(publicMatch.packages[0]?.id ?? '')
+          setBookingDraft((current) => ({
+            ...current,
+            guests: pendingPublicSelection.guests,
+            eventType: eventOption.marketplaceEvent,
+          }))
+          setSection('marketplace')
+          setToast(`${pendingPublicSelection.alias} is ready. Explore the team, menus, and booking options.`)
+        } else {
+          setSearchResults(null)
+          setToast('Backend connected. Live data loaded.')
+        }
+        setPendingPublicSelection(null)
+        setPublicAuthOpen(false)
         setBackendReady(true)
-        setToast('Backend connected. Live data loaded.')
       })
       .catch((apiError: unknown) => {
         if (!isCurrent) return
@@ -2111,6 +2617,8 @@ export default function App() {
     setUnreadNotificationCount(0)
     setMfaChallenge(null)
     setAuthBusy(false)
+    setPublicAuthOpen(false)
+    setPendingPublicSelection(null)
     setAuthError('')
     setToast('Signed out.')
   }
@@ -2589,15 +3097,57 @@ export default function App() {
 
   if (!session) {
     return (
-      <LoginPage
-        onAuthenticate={handleAuthenticate}
-        mfaChallenge={mfaChallenge}
-        onVerifyMfa={verifyMfa}
-        onResendMfa={resendMfa}
-        onCancelMfa={cancelMfa}
-        authBusy={authBusy}
-        authError={authError}
-      />
+      <>
+        <div
+          hidden={publicAuthOpen}
+          inert={publicAuthOpen}
+          aria-hidden={publicAuthOpen || undefined}
+        >
+          <PublicDiscovery
+            onCustomerSignIn={() => {
+              setPendingPublicSelection(null)
+              setPublicAccessMode('customer')
+              setAuthError('')
+              setPublicAuthOpen(true)
+            }}
+            onVendorSignIn={() => {
+              setPendingPublicSelection(null)
+              setPublicAccessMode('vendor')
+              setAuthError('')
+              setPublicAuthOpen(true)
+            }}
+            onAdminSignIn={() => {
+              setPendingPublicSelection(null)
+              setPublicAccessMode('admin')
+              setAuthError('')
+              setPublicAuthOpen(true)
+            }}
+            onSelect={(selection) => {
+              setPendingPublicSelection(selection)
+              setPublicAccessMode('customer')
+              setAuthError('')
+              setPublicAuthOpen(true)
+            }}
+          />
+        </div>
+        {publicAuthOpen && (
+          <LoginPage
+            onAuthenticate={handleAuthenticate}
+            selection={pendingPublicSelection}
+            accessMode={publicAccessMode}
+            onBackToDiscovery={() => {
+              cancelMfa()
+              setPublicAuthOpen(false)
+            }}
+            mfaChallenge={mfaChallenge}
+            onVerifyMfa={verifyMfa}
+            onResendMfa={resendMfa}
+            onCancelMfa={cancelMfa}
+            authBusy={authBusy}
+            authError={authError}
+          />
+        )}
+      </>
     )
   }
 
