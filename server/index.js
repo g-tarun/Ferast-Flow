@@ -196,12 +196,202 @@ const seedAccounts = () =>
     })),
   ]
 
-const applicationBannerImages = [
+const legacyDemoBannerImages = [
   '/images/wedding-buffet.png',
   '/images/corporate-lunch.png',
   '/images/dessert-station.png',
   '/images/hero-catering.png',
 ]
+
+const applicationBannerImages = [
+  '/images/event-wedding.webp',
+  '/images/event-corporate.webp',
+  '/images/event-housewarming.webp',
+  '/images/event-kitty-party.webp',
+  '/images/menu-telugu-curries.webp',
+  '/images/menu-south-indian-desserts.webp',
+]
+
+const seededVendorBannerImages = {
+  'spice-stem': '/images/menu-south-indian-starters.webp',
+  'urban-plate': '/images/event-corporate.webp',
+  'heritage-millet': '/images/menu-telugu-curries.webp',
+  'fresh-leaf': '/images/menu-south-indian-sides.webp',
+  'coastal-crave': '/images/event-other.webp',
+  'saffron-sage': '/images/feastflow-landing-v2.webp',
+}
+
+const seededPackageBannerImages = {
+  'royal-wedding': '/images/event-wedding.webp',
+  'office-premium': '/images/event-corporate.webp',
+  'dessert-social': '/images/menu-south-indian-desserts.webp',
+  'boardroom-bowls': '/images/event-corporate.webp',
+  'launch-spread': '/images/event-other.webp',
+  'banana-leaf': '/images/menu-telugu-curries.webp',
+  'garden-party': '/images/menu-south-indian-sides.webp',
+  'coastal-table': '/images/event-other.webp',
+  'mehfil-buffet': '/images/feastflow-landing-v2.webp',
+}
+
+const southIndianMenuForPackage = (packageId) => {
+  const category = (id, name, description, image, sortOrder) => ({
+    id: `${packageId}-${id}`,
+    name,
+    description,
+    image,
+    selectionMode: 'optional',
+    sortOrder,
+  })
+  const item = (id, categoryId, name, description, pricePerGuest, options = {}) => ({
+    id: `${packageId}-${id}`,
+    categoryId: `${packageId}-${categoryId}`,
+    name,
+    description,
+    pricePerGuest,
+    vegetarian: true,
+    spiceLevel: options.spiceLevel || 'mild',
+    includedByDefault: Boolean(options.includedByDefault),
+    sortOrder: options.sortOrder || 0,
+  })
+
+  return {
+    menuCategories: [
+      category(
+        'welcome',
+        'Welcome drinks',
+        'Refreshing Andhra favourites to greet guests before the first course.',
+        '/images/menu-telugu-welcome-drinks.webp',
+        0,
+      ),
+      category(
+        'starters',
+        'Tiffins & hot snacks',
+        'Street-side favourites and festive tiffins served hot with Telugu chutneys.',
+        '/images/menu-south-indian-starters.webp',
+        1,
+      ),
+      category(
+        'curries',
+        'Pappu, pulusu & kura',
+        'Slow-cooked lentils, tangy pulusu and comforting vegetable curries.',
+        '/images/menu-telugu-curries.webp',
+        2,
+      ),
+      category(
+        'mains',
+        'Rice & biryani',
+        'Fragrant rice dishes and Andhra staples for the centre of the feast.',
+        '/images/menu-south-indian-mains.webp',
+        3,
+      ),
+      category(
+        'sides',
+        'Pachadi, podi & sides',
+        'Punchy pickles, podis and crunchy essentials for a complete Telugu plate.',
+        '/images/menu-south-indian-sides.webp',
+        4,
+      ),
+      category(
+        'desserts',
+        'Telugu sweets',
+        'Celebration favourites from pootharekulu to warm bellam paramannam.',
+        '/images/menu-south-indian-desserts.webp',
+        5,
+      ),
+    ],
+    menuItems: [
+      item('panakam', 'welcome', 'Panakam', 'Jaggery, dry ginger and cardamom cooler.', 25, { sortOrder: 0 }),
+      item('masala-majjiga', 'welcome', 'Masala majjiga', 'Churned buttermilk with ginger, chilli and curry leaves.', 30, { spiceLevel: 'medium', sortOrder: 1 }),
+      item('nannari-sharbat', 'welcome', 'Nannari sharbat', 'Chilled sarsaparilla cooler with fresh lime.', 40, { sortOrder: 2 }),
+      item('ragi-ambali', 'welcome', 'Ragi ambali', 'Cooling finger-millet drink finished with buttermilk.', 35, { sortOrder: 3 }),
+      item('ginger-lime', 'welcome', 'Allam nimma soda', 'Ginger and lime cooler with a lively soda finish.', 30, { sortOrder: 4 }),
+
+      item('pesarattu-upma', 'starters', 'Pesarattu upma', 'Green gram crepe folded around soft ginger upma.', 70, { sortOrder: 0 }),
+      item('punugulu', 'starters', 'Punugulu', 'Crisp fermented rice-lentil bites with peanut chutney.', 40, { sortOrder: 1 }),
+      item('garelu', 'starters', 'Garelu', 'Golden urad dal vada with ginger and green chilli.', 35, { sortOrder: 2 }),
+      item('aratikaya-bajji', 'starters', 'Aratikaya bajji', 'Raw banana fritters with onion and lemon.', 35, { sortOrder: 3 }),
+      item('guntur-mirchi-bajji', 'starters', 'Guntur mirchi bajji', 'Stuffed chilli fritters with a bright, spicy finish.', 45, { spiceLevel: 'hot', sortOrder: 4 }),
+      item('dibba-rotti', 'starters', 'Dibba rotti bites', 'Crisp-edged rice and urad cake with ginger chutney.', 55, { sortOrder: 5 }),
+      item('mini-karam-dosa', 'starters', 'Mini karam dosa', 'Small dosas layered with fiery Andhra karam.', 65, { spiceLevel: 'hot', sortOrder: 6 }),
+
+      item('mudda-pappu', 'curries', 'Mudda pappu', 'Creamy toor dal tempered simply for a classic Telugu meal.', 0, { includedByDefault: true, sortOrder: 0 }),
+      item('tomato-pappu', 'curries', 'Tomato pappu', 'Tangy tomato dal with garlic and red chilli tempering.', 35, { spiceLevel: 'medium', sortOrder: 1 }),
+      item('gongura-pappu', 'curries', 'Gongura pappu', 'Sorrel leaf dal with a signature Andhra tang.', 45, { spiceLevel: 'medium', sortOrder: 2 }),
+      item('dosakaya-pappu', 'curries', 'Dosakaya pappu', 'Yellow cucumber dal with a gentle sour note.', 40, { sortOrder: 3 }),
+      item('gutti-vankaya', 'curries', 'Gutti vankaya kura', 'Baby brinjals stuffed with roasted peanut and sesame masala.', 60, { spiceLevel: 'medium', sortOrder: 4 }),
+      item('bendakaya-vepudu', 'curries', 'Bendakaya vepudu', 'Okra stir-fried with onions and roasted spices.', 45, { sortOrder: 5 }),
+      item('sorakaya-pulusu', 'curries', 'Sorakaya pulusu', 'Bottle gourd simmered in a tamarind and jaggery gravy.', 40, { sortOrder: 6 }),
+      item('mamidikaya-pulusu', 'curries', 'Mamidikaya pulusu', 'Raw mango pulusu balancing tang, spice and sweetness.', 50, { spiceLevel: 'medium', sortOrder: 7 }),
+
+      item('sona-masuri-rice', 'mains', 'Sona masuri annam', 'Steamed lightweight rice ready for pappu, pulusu and ghee.', 0, { includedByDefault: true, sortOrder: 0 }),
+      item('pulihora', 'mains', 'Pulihora', 'Temple-style tamarind rice with peanuts and sesame.', 0, { includedByDefault: true, spiceLevel: 'medium', sortOrder: 1 }),
+      item('andhra-veg-biryani', 'mains', 'Andhra vegetable biryani', 'Fragrant rice layered with vegetables and bold Andhra spices.', 85, { spiceLevel: 'medium', sortOrder: 2 }),
+      item('gongura-rice', 'mains', 'Gongura rice', 'Rice tossed with sorrel leaf masala and roasted peanuts.', 55, { spiceLevel: 'medium', sortOrder: 3 }),
+      item('bagara-rice', 'mains', 'Bagara rice', 'Hyderabadi tempered rice with mint and whole spices.', 50, { sortOrder: 4 }),
+      item('vegetable-pulao', 'mains', 'Vegetable pulao', 'Basmati rice with garden vegetables and gentle spices.', 65, { sortOrder: 5 }),
+      item('perugu-annam', 'mains', 'Perugu annam', 'Cooling curd rice with mustard and curry leaf tempering.', 0, { includedByDefault: true, sortOrder: 6 }),
+
+      item('gongura-pachadi', 'sides', 'Gongura pachadi', 'Bold sorrel relish with garlic and dried chillies.', 0, { includedByDefault: true, spiceLevel: 'hot', sortOrder: 0 }),
+      item('avakaya', 'sides', 'Avakaya', 'Andhra raw mango pickle with mustard and chilli.', 0, { includedByDefault: true, spiceLevel: 'hot', sortOrder: 1 }),
+      item('kandi-podi', 'sides', 'Kandi podi', 'Roasted lentil powder made for hot rice and ghee.', 0, { includedByDefault: true, spiceLevel: 'medium', sortOrder: 2 }),
+      item('appadam', 'sides', 'Appadam', 'Crisp sun-dried lentil wafers for every plate.', 0, { includedByDefault: true, sortOrder: 3 }),
+      item('tomato-pachadi', 'sides', 'Tomato pachadi', 'Rustic tomato chutney with garlic and red chilli.', 25, { spiceLevel: 'medium', sortOrder: 4 }),
+      item('vankaya-pachadi', 'sides', 'Vankaya pachadi', 'Smoky brinjal chutney with tamarind and green chilli.', 30, { spiceLevel: 'medium', sortOrder: 5 }),
+      item('dosavakaya', 'sides', 'Dosavakaya', 'Yellow cucumber pickle with mustard and chilli.', 20, { spiceLevel: 'hot', sortOrder: 6 }),
+      item('majjiga-mirapakayalu', 'sides', 'Majjiga mirapakayalu', 'Sun-dried curd chillies fried until crisp.', 20, { spiceLevel: 'hot', sortOrder: 7 }),
+
+      item('pootharekulu', 'desserts', 'Pootharekulu', 'Paper-thin rice sheets layered with ghee and powdered sugar.', 55, { sortOrder: 0 }),
+      item('bobbatlu', 'desserts', 'Bobbatlu', 'Soft festive flatbread filled with jaggery and chana dal.', 50, { sortOrder: 1 }),
+      item('bellam-paramannam', 'desserts', 'Bellam paramannam', 'Rice and moong dal pudding sweetened with jaggery.', 45, { sortOrder: 2 }),
+      item('ariselu', 'desserts', 'Ariselu', 'Traditional rice flour and jaggery sweet with sesame.', 40, { sortOrder: 3 }),
+      item('sunnundalu', 'desserts', 'Sunnundalu', 'Urad dal laddus enriched with ghee and sugar.', 35, { sortOrder: 4 }),
+      item('semiya-payasam', 'desserts', 'Semiya payasam', 'Vermicelli pudding with cashews, raisins and cardamom.', 40, { sortOrder: 5 }),
+      item('qubani-ka-meetha', 'desserts', 'Qubani ka meetha', 'Hyderabadi apricot dessert with a silky cream finish.', 65, { sortOrder: 6 }),
+      item('filter-coffee', 'desserts', 'Filter coffee', 'Fresh decoction coffee with hot milk.', 30, { sortOrder: 7 }),
+      item('badam-milk', 'desserts', 'Badam milk', 'Chilled saffron almond milk with cardamom.', 45, { sortOrder: 8 }),
+    ],
+  }
+}
+
+const mergeCatalogRecords = (currentRecords = [], generatedRecords = []) => {
+  const currentById = new Map(currentRecords.map((record) => [record.id, record]))
+  const generatedIds = new Set(generatedRecords.map((record) => record.id))
+  return [
+    ...generatedRecords.map((record) => ({ ...(currentById.get(record.id) || {}), ...record })),
+    ...currentRecords.filter((record) => !generatedIds.has(record.id)),
+  ]
+}
+
+const enrichVendorsWithMenus = (vendorRecords) =>
+  vendorRecords.map((vendor) => ({
+    ...vendor,
+    image:
+      seededVendorBannerImages[vendor.id] && legacyDemoBannerImages.includes(vendor.image)
+        ? seededVendorBannerImages[vendor.id]
+        : vendor.image,
+    packages: (vendor.packages || []).map((pack) => {
+      const generatedMenu = southIndianMenuForPackage(pack.id)
+      return {
+        ...pack,
+        image:
+          seededPackageBannerImages[pack.id] && legacyDemoBannerImages.includes(pack.image)
+            ? seededPackageBannerImages[pack.id]
+            : pack.image,
+        menuCategories: mergeCatalogRecords(pack.menuCategories, generatedMenu.menuCategories),
+        menuItems: mergeCatalogRecords(pack.menuItems, generatedMenu.menuItems),
+      }
+    }),
+  }))
+
+const packageNeedsMenuCatalogMigration = (pack) => {
+  const generatedMenu = southIndianMenuForPackage(pack.id)
+  const categoryIds = new Set((pack.menuCategories || []).map((category) => category.id))
+  const itemIds = new Set((pack.menuItems || []).map((item) => item.id))
+  return (
+    generatedMenu.menuCategories.some((category) => !categoryIds.has(category.id)) ||
+    generatedMenu.menuItems.some((item) => !itemIds.has(item.id))
+  )
+}
 
 const pickApplicationBanner = () => applicationBannerImages[Math.floor(Math.random() * applicationBannerImages.length)]
 const applicationDocumentItems = {
@@ -214,7 +404,7 @@ const onboardingDraftLicense = 'PENDING-ONBOARDING'
 const sanitizeBannerImage = (bannerImage) => {
   const image = String(bannerImage || '')
   if (image.startsWith('data:image/') && image.length < 3_500_000) return image
-  if (applicationBannerImages.includes(image)) return image
+  if (applicationBannerImages.includes(image) || legacyDemoBannerImages.includes(image)) return image
   return pickApplicationBanner()
 }
 
@@ -384,7 +574,7 @@ const createOnboardingDraftVendor = (account) => ({
   packages: [],
 })
 
-const seedVendors = () => [
+const seedVendors = () => enrichVendorsWithMenus([
   {
     id: 'spice-stem',
     name: 'Spice & Stem Catering',
@@ -652,7 +842,7 @@ const seedVendors = () => [
       },
     ],
   },
-]
+])
 
 const seedBookings = () => [
   {
@@ -1073,15 +1263,49 @@ const findVendorAndPackage = (vendorId, packageId) => {
   return { vendor, caterPackage }
 }
 
-const calculateBookingTotal = ({ vendorId, packageId, guests, addOnIds = [] }) => {
+const calculateBookingPricing = ({ vendorId, packageId, guests, addOnIds = [], menuItemIds = [] }) => {
   const { caterPackage } = findVendorAndPackage(vendorId, packageId)
-  if (!caterPackage) return 0
+  if (!caterPackage) return null
 
-  const packageTotal = Math.max(Number(guests), caterPackage.minGuests) * caterPackage.pricePerGuest
+  const availableItems = Array.isArray(caterPackage.menuItems) ? caterPackage.menuItems : []
+  const itemsById = new Map(availableItems.map((item) => [item.id, item]))
+  const requestedIds = Array.from(
+    new Set((Array.isArray(menuItemIds) ? menuItemIds : []).map((id) => String(id))),
+  )
+  const invalidMenuItemIds = requestedIds.filter((id) => !itemsById.has(id))
+  const selectedIds = Array.from(
+    new Set([
+      ...availableItems.filter((item) => item.includedByDefault).map((item) => item.id),
+      ...requestedIds.filter((id) => itemsById.has(id)),
+    ]),
+  )
+  const selectedMenuItems = selectedIds.map((id) => itemsById.get(id)).filter(Boolean)
+  const categoriesById = new Map(
+    (caterPackage.menuCategories || []).map((category) => [category.id, category]),
+  )
+  const menuPricePerGuest = selectedMenuItems.reduce(
+    (total, item) => total + Number(item.pricePerGuest || 0),
+    0,
+  )
+  const billableGuests = Math.max(Number(guests), caterPackage.minGuests)
+  const basePricePerGuest = Number(caterPackage.pricePerGuest)
+
   const addOnTotal = addOns
     .filter((addOn) => addOnIds.includes(addOn.id))
     .reduce((total, addOn) => total + addOn.price, 0)
-  return packageTotal + addOnTotal
+  return {
+    amount: billableGuests * (basePricePerGuest + menuPricePerGuest) + addOnTotal,
+    basePricePerGuest,
+    menuPricePerGuest,
+    billableGuests,
+    invalidMenuItemIds,
+    menuSelections: selectedMenuItems.map((item) => ({
+      menuItemId: item.id,
+      name: item.name,
+      categoryName: categoriesById.get(item.categoryId)?.name || 'Menu',
+      pricePerGuest: Number(item.pricePerGuest || 0),
+    })),
+  }
 }
 
 const canAccessBooking = (user, booking) => {
@@ -1108,7 +1332,7 @@ const appState = () => ({
 
 const applyPersistedState = (state) => {
   accounts = Array.isArray(state.accounts) ? state.accounts : seedAccounts()
-  vendors = Array.isArray(state.vendors) ? state.vendors : seedVendors()
+  vendors = Array.isArray(state.vendors) ? enrichVendorsWithMenus(state.vendors) : seedVendors()
   bookings = Array.isArray(state.bookings) ? state.bookings : seedBookings()
   addOns = Array.isArray(state.addOns) ? state.addOns : seedAddOns()
   payments = Array.isArray(state.payments) ? state.payments : []
@@ -1145,8 +1369,12 @@ const initializePersistence = async () => {
   databaseStore = await createDatabaseStore()
   const persistedState = await databaseStore.loadState()
   if (persistedState) {
+    const needsMenuMigration = (persistedState.vendors || []).some((vendor) =>
+      (vendor.packages || []).some(packageNeedsMenuCatalogMigration),
+    )
     applyPersistedState(persistedState)
     await ensureDemoAccounts()
+    if (needsMenuMigration) await saveState()
     console.log(`FeastFlow API loaded persisted state from MySQL: ${databaseLabel()}`)
   } else {
     await saveState()
@@ -1802,8 +2030,10 @@ app.post('/api/vendors/:vendorId/packages', requireAuth, asyncHandler(async (req
     return res.status(400).json({ message: 'Package title, price, and minimum guests are required' })
   }
 
+  const packageId = makeId('PKG').toLowerCase()
   const packageToAdd = {
-    id: makeId('PKG').toLowerCase(),
+    ...southIndianMenuForPackage(packageId),
+    id: packageId,
     title,
     description: 'Custom package added from the vendor operations dashboard.',
     pricePerGuest,
@@ -1827,8 +2057,18 @@ app.post('/api/vendors/:vendorId/packages', requireAuth, asyncHandler(async (req
 
 app.post('/api/bookings', requireAuth, asyncHandler(async (req, res) => {
   if (req.user.role !== 'customer') return res.status(403).json({ message: 'Customer role required' })
-  const { vendorId, packageId, eventType, date, guests, addOns: addOnIds = [], note = '', paymentChoice = 'deposit', mode = 'quote' } =
-    req.body
+  const {
+    vendorId,
+    packageId,
+    eventType,
+    date,
+    guests,
+    addOns: addOnIds = [],
+    menuItemIds = [],
+    note = '',
+    paymentChoice = 'deposit',
+    mode = 'quote',
+  } = req.body
   const { vendor, caterPackage } = findVendorAndPackage(vendorId, packageId)
   if (!vendor || !caterPackage) return res.status(404).json({ message: 'Vendor package not found' })
   if (!isCustomerVisibleVendor(vendor)) return res.status(409).json({ message: 'This vendor is not currently available for booking' })
@@ -1836,7 +2076,12 @@ app.post('/api/bookings', requireAuth, asyncHandler(async (req, res) => {
     return res.status(400).json({ message: `Minimum guest count is ${caterPackage.minGuests}` })
   }
 
-  const amount = calculateBookingTotal({ vendorId, packageId, guests, addOnIds })
+  const pricing = calculateBookingPricing({ vendorId, packageId, guests, addOnIds, menuItemIds })
+  if (!pricing) return res.status(404).json({ message: 'Vendor package not found' })
+  if (pricing.invalidMenuItemIds.length > 0) {
+    return res.status(400).json({ message: 'One or more selected menu items are unavailable for this package' })
+  }
+  const amount = pricing.amount
   const booking = {
     id: makeId('BK'),
     customerId: req.user.id,
@@ -1847,6 +2092,9 @@ app.post('/api/bookings', requireAuth, asyncHandler(async (req, res) => {
     date,
     guests: Number(guests),
     addOns: addOnIds,
+    menuSelections: pricing.menuSelections,
+    basePricePerGuest: pricing.basePricePerGuest,
+    menuPricePerGuest: pricing.menuPricePerGuest,
     note,
     amount,
     deposit: mode === 'instant' ? (paymentChoice === 'full' ? amount : Math.ceil(amount * 0.3)) : 0,

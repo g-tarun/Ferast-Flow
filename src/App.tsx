@@ -22,11 +22,14 @@ import {
   Heart,
   Home,
   KeyRound,
+  Leaf,
   LogOut,
   MapPin,
   MessageCircle,
+  Minus,
   PackagePlus,
   PartyPopper,
+  Plus,
   RefreshCw,
   Search,
   Send,
@@ -93,7 +96,30 @@ type CaterPackage = {
   image: string
   tags: string[]
   items: string[]
+  menuCategories: MenuCategory[]
+  menuItems: MenuItem[]
   instantBook: boolean
+}
+
+type MenuCategory = {
+  id: string
+  name: string
+  description: string
+  image: string
+  selectionMode: 'included' | 'optional'
+  sortOrder: number
+}
+
+type MenuItem = {
+  id: string
+  categoryId: string
+  name: string
+  description: string
+  pricePerGuest: number
+  vegetarian: boolean
+  spiceLevel: 'mild' | 'medium' | 'hot'
+  includedByDefault: boolean
+  sortOrder: number
 }
 
 type GeoPoint = {
@@ -179,6 +205,14 @@ type Booking = {
   date: string
   guests: number
   addOns: string[]
+  menuSelections: Array<{
+    menuItemId: string
+    name: string
+    categoryName: string
+    pricePerGuest: number
+  }>
+  basePricePerGuest: number
+  menuPricePerGuest: number
   note: string
   amount: number
   deposit: number
@@ -2005,6 +2039,7 @@ export default function App() {
   const [application, setApplication] = useState<VendorApplication>(initialApplication)
   const [selectedVendorId, setSelectedVendorId] = useState('spice-stem')
   const [selectedPackageId, setSelectedPackageId] = useState('royal-wedding')
+  const [selectedMenuItemIds, setSelectedMenuItemIds] = useState<string[]>([])
   const [bookingDraft, setBookingDraft] = useState({
     guests: initialFilters.guests,
     date: initialFilters.date,
@@ -2158,15 +2193,29 @@ export default function App() {
   const customerBookings = bookings
   const selectedAddOns = addOns.filter((item) => bookingDraft.addOns.includes(item.id))
   const selectedAddOnTotal = selectedAddOns.reduce((total, item) => total + item.price, 0)
-  const bookingBaseTotal = selectedPackage
-    ? Math.max(bookingDraft.guests, selectedPackage.minGuests) * selectedPackage.pricePerGuest
-    : 0
-  const bookingTotal = bookingBaseTotal + selectedAddOnTotal
+  const selectedMenuItems = (selectedPackage?.menuItems ?? []).filter((item) =>
+    selectedMenuItemIds.includes(item.id),
+  )
+  const menuExtraPerGuest = selectedMenuItems.reduce((total, item) => total + item.pricePerGuest, 0)
+  const billableGuests = selectedPackage
+    ? Math.max(bookingDraft.guests, selectedPackage.minGuests)
+    : bookingDraft.guests
+  const bookingPlatePrice = (selectedPackage?.pricePerGuest ?? 0) + menuExtraPerGuest
+  const bookingFoodTotal = billableGuests * bookingPlatePrice
+  const bookingTotal = bookingFoodTotal + selectedAddOnTotal
   const depositAmount =
     bookingDraft.paymentChoice === 'full' ? bookingTotal : Math.ceil(bookingTotal * 0.3)
   const confirmedRevenue = bookings
     .filter((booking) => booking.status === 'confirmed' || booking.status === 'completed')
     .reduce((total, booking) => total + booking.amount, 0)
+
+  useEffect(() => {
+    setSelectedMenuItemIds(
+      (selectedPackage?.menuItems ?? [])
+        .filter((item) => item.includedByDefault)
+        .map((item) => item.id),
+    )
+  }, [selectedPackage?.id])
 
   useEffect(() => {
     if (role !== 'vendor' || !currentVendor) return
@@ -2656,6 +2705,16 @@ export default function App() {
     })
   }
 
+  const toggleMenuItem = (itemId: string) => {
+    const item = selectedPackage?.menuItems.find((menuItem) => menuItem.id === itemId)
+    if (!item || item.includedByDefault) return
+    setSelectedMenuItemIds((currentIds) =>
+      currentIds.includes(itemId)
+        ? currentIds.filter((id) => id !== itemId)
+        : [...currentIds, itemId],
+    )
+  }
+
   const createBooking = async (mode: 'instant' | 'quote') => {
     if (!selectedVendor || !selectedPackage) {
       setError('Select a vendor package first.')
@@ -2683,6 +2742,7 @@ export default function App() {
           date: bookingDraft.date,
           guests: bookingDraft.guests,
           addOns: bookingDraft.addOns,
+          menuItemIds: selectedMenuItemIds,
           note: bookingDraft.note,
           paymentChoice: bookingDraft.paymentChoice,
           mode,
@@ -3283,6 +3343,11 @@ export default function App() {
             bookingTotal={bookingTotal}
             depositAmount={depositAmount}
             selectedAddOnTotal={selectedAddOnTotal}
+            selectedMenuItemIds={selectedMenuItemIds}
+            menuExtraPerGuest={menuExtraPerGuest}
+            billableGuests={billableGuests}
+            bookingPlatePrice={bookingPlatePrice}
+            bookingFoodTotal={bookingFoodTotal}
             error={error}
             locationStatus={locationStatus}
             locationSuggestions={locationSuggestions}
@@ -3293,6 +3358,7 @@ export default function App() {
             chooseVendor={chooseVendor}
             setSelectedPackageId={setSelectedPackageId}
             toggleAddOn={toggleAddOn}
+            toggleMenuItem={toggleMenuItem}
             createBooking={createBooking}
           />
         )}
@@ -3402,6 +3468,11 @@ function CustomerMarketplace({
   bookingTotal,
   depositAmount,
   selectedAddOnTotal,
+  selectedMenuItemIds,
+  menuExtraPerGuest,
+  billableGuests,
+  bookingPlatePrice,
+  bookingFoodTotal,
   error,
   locationStatus,
   locationSuggestions,
@@ -3412,6 +3483,7 @@ function CustomerMarketplace({
   chooseVendor,
   setSelectedPackageId,
   toggleAddOn,
+  toggleMenuItem,
   createBooking,
 }: {
   filters: Filters
@@ -3433,6 +3505,11 @@ function CustomerMarketplace({
   bookingTotal: number
   depositAmount: number
   selectedAddOnTotal: number
+  selectedMenuItemIds: string[]
+  menuExtraPerGuest: number
+  billableGuests: number
+  bookingPlatePrice: number
+  bookingFoodTotal: number
   error: string
   locationStatus: 'idle' | 'asking' | 'allowed' | 'denied'
   locationSuggestions: string[]
@@ -3446,23 +3523,60 @@ function CustomerMarketplace({
   chooseVendor: (vendorId: string) => void
   setSelectedPackageId: (packageId: string) => void
   toggleAddOn: (id: string) => void
+  toggleMenuItem: (itemId: string) => void
   createBooking: (mode: 'instant' | 'quote') => void
 }) {
+  const [activeMenuCategoryId, setActiveMenuCategoryId] = useState('')
+  const [mobileVendorDetailOpen, setMobileVendorDetailOpen] = useState(false)
+  const openInitialMobileDetail = useRef(searchHasRun && Boolean(selectedVendor))
+
+  const scrollToMarketplaceTop = (selector: string) => {
+    window.requestAnimationFrame(() => {
+      const target = document.querySelector<HTMLElement>(selector)
+      const topbarHeight = document.querySelector<HTMLElement>('.topbar')?.offsetHeight ?? 72
+      if (!target) return
+      const targetTop = target.getBoundingClientRect().top + window.scrollY - topbarHeight - 8
+      window.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' })
+    })
+  }
+
   const openVendor = (vendorId: string) => {
     chooseVendor(vendorId)
     if (window.matchMedia('(max-width: 940px)').matches) {
-      window.requestAnimationFrame(() => {
-        const selectedCaterer = document.getElementById('selected-caterer')
-        const topbarHeight = document.querySelector<HTMLElement>('.topbar')?.offsetHeight ?? 92
-        if (!selectedCaterer) return
-        const targetTop = selectedCaterer.getBoundingClientRect().top + window.scrollY - topbarHeight - 12
-        window.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' })
-      })
+      setMobileVendorDetailOpen(true)
+      scrollToMarketplaceTop('.customer-marketplace .content-grid')
     }
   }
 
+  const closeMobileVendorDetail = () => {
+    setMobileVendorDetailOpen(false)
+    scrollToMarketplaceTop('.customer-marketplace .hero-band')
+  }
+
+  const reviewMobileOrder = () => {
+    scrollToMarketplaceTop('.customer-marketplace .checkout-breakdown')
+  }
+
+  useEffect(() => {
+    if (!openInitialMobileDetail.current || !window.matchMedia('(max-width: 940px)').matches) return
+    openInitialMobileDetail.current = false
+    setMobileVendorDetailOpen(true)
+    scrollToMarketplaceTop('.customer-marketplace .content-grid')
+  }, [])
+
+  useEffect(() => {
+    setActiveMenuCategoryId(selectedPackage?.menuCategories?.[0]?.id ?? '')
+  }, [selectedPackage?.id])
+
+  const activeMenuCategory =
+    selectedPackage?.menuCategories.find((category) => category.id === activeMenuCategoryId) ??
+    selectedPackage?.menuCategories?.[0]
+  const activeMenuItems = (selectedPackage?.menuItems ?? [])
+    .filter((item) => item.categoryId === activeMenuCategory?.id)
+    .sort((first, second) => first.sortOrder - second.sortOrder)
+
   return (
-    <>
+    <div className={`customer-marketplace ${mobileVendorDetailOpen ? 'mobile-detail-open' : ''}`}>
       <section className="hero-band" style={{ backgroundImage: `url(${landingHeroImage})` }}>
         <FeastDepthScene variant="discovery" />
         <div className="hero-copy">
@@ -3598,6 +3712,17 @@ function CustomerMarketplace({
       </section>
 
       <section className="content-grid">
+        <div className="mobile-detail-toolbar">
+          <button type="button" onClick={closeMobileVendorDetail} aria-label="Back to all caterers">
+            <ArrowLeft size={20} aria-hidden="true" />
+            All caterers
+          </button>
+          <span>
+            <small>Building your feast</small>
+            <strong>{selectedVendor?.name ?? 'Selected caterer'}</strong>
+          </span>
+        </div>
+
         <div className="results-column">
           <div className="section-heading">
             <div>
@@ -3863,14 +3988,137 @@ function CustomerMarketplace({
                     <span key={tag}>{tag}</span>
                   ))}
                 </div>
-                <ul className="menu-items">
-                  {selectedPackage.items.map((item) => (
-                    <li key={item}>
-                      <CheckCircle2 size={15} aria-hidden="true" />
-                      {item}
-                    </li>
-                  ))}
-                </ul>
+                <section className="plate-builder" aria-labelledby="plate-builder-title">
+                  <div className="plate-builder-heading">
+                    <div>
+                      <p className="eyebrow">Your menu, your plate</p>
+                      <h3 id="plate-builder-title">Build your Telugu feast</h3>
+                      <p>
+                        Explore {selectedPackage.menuItems.length} authentic Andhra and Telangana favourites across{' '}
+                        {selectedPackage.menuCategories.length} sections. Every choice is priced per guest.
+                      </p>
+                    </div>
+                    <div className="plate-live-rate" aria-live="polite">
+                      <small>Current plate</small>
+                      <strong>{currency.format(bookingPlatePrice)}</strong>
+                    </div>
+                  </div>
+
+                  {selectedPackage.menuCategories.length > 0 ? (
+                    <>
+                      <div className="menu-category-rail" role="tablist" aria-label="Menu categories">
+                        {[...selectedPackage.menuCategories]
+                          .sort((first, second) => first.sortOrder - second.sortOrder)
+                          .map((category) => {
+                            const categoryItems = selectedPackage.menuItems.filter(
+                              (item) => item.categoryId === category.id,
+                            )
+                            const selectedCount = categoryItems.filter((item) =>
+                              selectedMenuItemIds.includes(item.id),
+                            ).length
+                            return (
+                              <button
+                                key={category.id}
+                                type="button"
+                                role="tab"
+                                aria-selected={activeMenuCategory?.id === category.id}
+                                aria-controls={`menu-panel-${category.id}`}
+                                className={activeMenuCategory?.id === category.id ? 'active' : ''}
+                                onClick={() => setActiveMenuCategoryId(category.id)}
+                              >
+                                <img src={displayImageSrc(category.image)} alt="" loading="lazy" />
+                                <span>
+                                  <strong>{category.name}</strong>
+                                  <small>{selectedCount} of {categoryItems.length} selected</small>
+                                </span>
+                              </button>
+                            )
+                          })}
+                      </div>
+
+                      {activeMenuCategory && (
+                        <div
+                          id={`menu-panel-${activeMenuCategory.id}`}
+                          className="menu-category-panel"
+                          role="tabpanel"
+                        >
+                          <div className="menu-category-banner">
+                            <img
+                              src={displayImageSrc(activeMenuCategory.image)}
+                              alt={`${activeMenuCategory.name} spread`}
+                              loading="lazy"
+                            />
+                            <div>
+                              <p>{activeMenuCategory.name}</p>
+                              <span>{activeMenuCategory.description}</span>
+                            </div>
+                          </div>
+                          <div className="menu-dish-list">
+                            {activeMenuItems.map((item) => {
+                              const isSelected = selectedMenuItemIds.includes(item.id)
+                              return (
+                                <article className={`menu-dish ${isSelected ? 'selected' : ''}`} key={item.id}>
+                                  <div className="menu-dish-copy">
+                                    <span className="veg-mark" title="Vegetarian">
+                                      <span />
+                                    </span>
+                                    <div>
+                                      <strong>{item.name}</strong>
+                                      <p>{item.description}</p>
+                                      <small>{item.spiceLevel} spice</small>
+                                    </div>
+                                  </div>
+                                  <div className="menu-dish-action">
+                                    <strong>
+                                      {item.pricePerGuest === 0
+                                        ? 'Included'
+                                        : `+${currency.format(item.pricePerGuest)} / plate`}
+                                    </strong>
+                                    <button
+                                      type="button"
+                                      className={isSelected ? 'selected' : ''}
+                                      disabled={item.includedByDefault}
+                                      onClick={() => toggleMenuItem(item.id)}
+                                      aria-label={
+                                        item.includedByDefault
+                                          ? `${item.name} is included`
+                                          : isSelected
+                                            ? `Remove ${item.name}`
+                                            : `Add ${item.name}`
+                                      }
+                                      title={item.includedByDefault ? 'Included with this package' : isSelected ? 'Remove dish' : 'Add dish'}
+                                    >
+                                      {isSelected ? <Minus size={17} aria-hidden="true" /> : <Plus size={17} aria-hidden="true" />}
+                                    </button>
+                                  </div>
+                                </article>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <ul className="menu-items">
+                      {selectedPackage.items.map((item) => (
+                        <li key={item}>
+                          <CheckCircle2 size={15} aria-hidden="true" />
+                          {item}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  <div className="plate-selection-summary">
+                    <span>
+                      <Leaf size={17} aria-hidden="true" />
+                      <strong>{selectedMenuItemIds.length} dishes</strong> on every plate
+                    </span>
+                    <span>
+                      Extras <strong>{currency.format(menuExtraPerGuest)} / guest</strong>
+                    </span>
+                  </div>
+                </section>
 
                 <div className="booking-fields">
                   <label>
@@ -3935,10 +4183,29 @@ function CustomerMarketplace({
                   </p>
                 )}
 
+                <div className="checkout-breakdown" aria-label="Booking price breakdown">
+                  <div>
+                    <span>Package base</span>
+                    <strong>{currency.format(selectedPackage.pricePerGuest)} / plate</strong>
+                  </div>
+                  <div>
+                    <span>Selected menu extras</span>
+                    <strong>{currency.format(menuExtraPerGuest)} / plate</strong>
+                  </div>
+                  <div>
+                    <span>Food for {billableGuests} guests</span>
+                    <strong>{currency.format(bookingFoodTotal)}</strong>
+                  </div>
+                  <div>
+                    <span>Event add-ons</span>
+                    <strong>{currency.format(selectedAddOnTotal)}</strong>
+                  </div>
+                </div>
+
                 <div className="total-row">
                   <span>
-                    Package + add-ons
-                    <small>Add-ons: {currency.format(selectedAddOnTotal)}</small>
+                    Estimated event total
+                    <small>{currency.format(bookingPlatePrice)} per plate · {billableGuests} billable guests</small>
                   </span>
                   <strong>{currency.format(bookingTotal)}</strong>
                 </div>
@@ -3989,7 +4256,20 @@ function CustomerMarketplace({
           )}
         </aside>
       </section>
-    </>
+
+      {mobileVendorDetailOpen && selectedVendor && selectedPackage && (
+        <div className="mobile-order-dock" aria-label="Current order estimate">
+          <span>
+            <small>{selectedMenuItemIds.length} dishes · {billableGuests} guests</small>
+            <strong>{currency.format(bookingTotal)} estimate</strong>
+          </span>
+          <button type="button" onClick={reviewMobileOrder}>
+            Review order
+            <ChevronRight size={18} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -4087,6 +4367,13 @@ function CustomerBookings({
                       <Wallet size={15} aria-hidden="true" />
                       {currency.format(booking.amount)}
                     </span>
+                    {(booking.menuSelections?.length ?? 0) > 0 && (
+                      <span>
+                        <Leaf size={15} aria-hidden="true" />
+                        {booking.menuSelections.length} dishes ·{' '}
+                        {currency.format(booking.basePricePerGuest + booking.menuPricePerGuest)} per plate
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>

@@ -71,9 +71,12 @@ const stateTables = [
   'payments',
   'chat_messages',
   'booking_timeline',
+  'booking_menu_items',
   'booking_add_ons',
   'bookings',
   'package_items',
+  'menu_items',
+  'menu_categories',
   'package_tags',
   'vendor_packages',
   'documents',
@@ -456,6 +459,37 @@ const createSchema = async (pool) => {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `,
     `
+      CREATE TABLE IF NOT EXISTS menu_categories (
+        id VARCHAR(120) PRIMARY KEY,
+        package_id VARCHAR(120) NOT NULL,
+        name VARCHAR(120) NOT NULL,
+        description VARCHAR(320) NOT NULL,
+        image LONGTEXT NOT NULL,
+        selection_mode VARCHAR(24) NOT NULL DEFAULT 'optional',
+        sort_order INT NOT NULL DEFAULT 0,
+        KEY menu_categories_package_index (package_id, sort_order),
+        CONSTRAINT menu_categories_package_fk FOREIGN KEY (package_id) REFERENCES vendor_packages(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS menu_items (
+        id VARCHAR(120) PRIMARY KEY,
+        package_id VARCHAR(120) NOT NULL,
+        category_id VARCHAR(120) NOT NULL,
+        name VARCHAR(160) NOT NULL,
+        description VARCHAR(360) NOT NULL,
+        price_per_guest INT NOT NULL DEFAULT 0,
+        vegetarian TINYINT(1) NOT NULL DEFAULT 1,
+        spice_level VARCHAR(24) NOT NULL DEFAULT 'mild',
+        included_by_default TINYINT(1) NOT NULL DEFAULT 0,
+        sort_order INT NOT NULL DEFAULT 0,
+        KEY menu_items_package_index (package_id, sort_order),
+        KEY menu_items_category_index (category_id, sort_order),
+        CONSTRAINT menu_items_package_fk FOREIGN KEY (package_id) REFERENCES vendor_packages(id) ON DELETE CASCADE,
+        CONSTRAINT menu_items_category_fk FOREIGN KEY (category_id) REFERENCES menu_categories(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `,
+    `
       CREATE TABLE IF NOT EXISTS add_ons (
         id VARCHAR(80) PRIMARY KEY,
         name VARCHAR(120) NOT NULL,
@@ -472,6 +506,8 @@ const createSchema = async (pool) => {
         event_type VARCHAR(80) NOT NULL,
         event_date DATE NOT NULL,
         guests INT NOT NULL,
+        base_price_per_guest INT NOT NULL DEFAULT 0,
+        menu_price_per_guest INT NOT NULL DEFAULT 0,
         note TEXT NULL,
         amount INT NOT NULL,
         deposit INT NOT NULL,
@@ -489,6 +525,17 @@ const createSchema = async (pool) => {
         add_on_id VARCHAR(80) NOT NULL,
         PRIMARY KEY (booking_id, add_on_id),
         CONSTRAINT booking_addons_booking_fk FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `,
+    `
+      CREATE TABLE IF NOT EXISTS booking_menu_items (
+        booking_id VARCHAR(120) NOT NULL,
+        menu_item_id VARCHAR(120) NOT NULL,
+        item_name VARCHAR(160) NOT NULL,
+        category_name VARCHAR(120) NOT NULL,
+        price_per_guest INT NOT NULL DEFAULT 0,
+        PRIMARY KEY (booking_id, menu_item_id),
+        CONSTRAINT booking_menu_items_booking_fk FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `,
     `
@@ -607,6 +654,25 @@ const createSchema = async (pool) => {
     await pool.query('CREATE INDEX bookings_customer_index ON bookings (customer_id)')
   }
 
+  const [bookingPriceColumns] = await pool.query(
+    `
+      SELECT COLUMN_NAME AS column_name
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'bookings'
+        AND COLUMN_NAME IN ('base_price_per_guest', 'menu_price_per_guest')
+    `,
+  )
+  const bookingPriceColumnNames = new Set(bookingPriceColumns.map((column) => column.column_name))
+  if (!bookingPriceColumnNames.has('base_price_per_guest')) {
+    await pool.query('ALTER TABLE bookings ADD COLUMN base_price_per_guest INT NOT NULL DEFAULT 0 AFTER guests')
+  }
+  if (!bookingPriceColumnNames.has('menu_price_per_guest')) {
+    await pool.query(
+      'ALTER TABLE bookings ADD COLUMN menu_price_per_guest INT NOT NULL DEFAULT 0 AFTER base_price_per_guest',
+    )
+  }
+
   await migrateLegacyVendorDocuments(pool)
 }
 
@@ -629,8 +695,11 @@ const readRelationalState = async (pool) => {
     [packageRows],
     [tagRows],
     [itemRows],
+    [menuCategoryRows],
+    [menuItemRows],
     [bookingRows],
     [bookingAddOnRows],
+    [bookingMenuItemRows],
     [timelineRows],
     [messageRows],
     [reviewRows],
@@ -658,8 +727,11 @@ const readRelationalState = async (pool) => {
     pool.query('SELECT * FROM vendor_packages ORDER BY created_at ASC'),
     pool.query('SELECT * FROM package_tags ORDER BY package_id ASC, tag ASC'),
     pool.query('SELECT * FROM package_items ORDER BY package_id ASC, sort_order ASC'),
+    pool.query('SELECT * FROM menu_categories ORDER BY package_id ASC, sort_order ASC'),
+    pool.query('SELECT * FROM menu_items ORDER BY package_id ASC, category_id ASC, sort_order ASC'),
     pool.query('SELECT * FROM bookings ORDER BY created_at DESC'),
     pool.query('SELECT * FROM booking_add_ons ORDER BY booking_id ASC, add_on_id ASC'),
+    pool.query('SELECT * FROM booking_menu_items ORDER BY booking_id ASC, category_name ASC, item_name ASC'),
     pool.query('SELECT * FROM booking_timeline ORDER BY booking_id ASC, sort_order ASC'),
     pool.query('SELECT * FROM chat_messages ORDER BY booking_id ASC, id ASC'),
     pool.query('SELECT * FROM reviews'),
@@ -676,7 +748,10 @@ const readRelationalState = async (pool) => {
   const packagesByVendor = groupBy(packageRows, 'vendor_id')
   const tagsByPackage = groupBy(tagRows, 'package_id')
   const itemsByPackage = groupBy(itemRows, 'package_id')
+  const menuCategoriesByPackage = groupBy(menuCategoryRows, 'package_id')
+  const menuItemsByPackage = groupBy(menuItemRows, 'package_id')
   const addOnsByBooking = groupBy(bookingAddOnRows, 'booking_id')
+  const menuItemsByBooking = groupBy(bookingMenuItemRows, 'booking_id')
   const timelineByBooking = groupBy(timelineRows, 'booking_id')
   const messagesByBooking = groupBy(messageRows, 'booking_id')
   const reviewsByBooking = new Map(reviewRows.map((review) => [review.booking_id, review]))
@@ -729,6 +804,25 @@ const readRelationalState = async (pool) => {
         tags: (tagsByPackage.get(pack.id) || []).map((item) => item.tag),
         instantBook: asBoolean(pack.instant_book),
         items: (itemsByPackage.get(pack.id) || []).map((item) => item.item_text),
+        menuCategories: (menuCategoriesByPackage.get(pack.id) || []).map((category) => ({
+          id: category.id,
+          name: category.name,
+          description: category.description,
+          image: category.image,
+          selectionMode: category.selection_mode,
+          sortOrder: asNumber(category.sort_order),
+        })),
+        menuItems: (menuItemsByPackage.get(pack.id) || []).map((item) => ({
+          id: item.id,
+          categoryId: item.category_id,
+          name: item.name,
+          description: item.description,
+          pricePerGuest: asNumber(item.price_per_guest),
+          vegetarian: asBoolean(item.vegetarian),
+          spiceLevel: item.spice_level,
+          includedByDefault: asBoolean(item.included_by_default),
+          sortOrder: asNumber(item.sort_order),
+        })),
       })),
     }
   })
@@ -744,7 +838,15 @@ const readRelationalState = async (pool) => {
       eventType: booking.event_type,
       date: dateOnly(booking.event_date),
       guests: asNumber(booking.guests),
+      basePricePerGuest: asNumber(booking.base_price_per_guest),
+      menuPricePerGuest: asNumber(booking.menu_price_per_guest),
       addOns: (addOnsByBooking.get(booking.id) || []).map((item) => item.add_on_id),
+      menuSelections: (menuItemsByBooking.get(booking.id) || []).map((item) => ({
+        menuItemId: item.menu_item_id,
+        name: item.item_name,
+        categoryName: item.category_name,
+        pricePerGuest: asNumber(item.price_per_guest),
+      })),
       note: booking.note || '',
       amount: asNumber(booking.amount),
       deposit: asNumber(booking.deposit),
@@ -1046,6 +1148,48 @@ const saveRelationalState = async (pool, state, options = {}) => {
             [pack.id, index, item],
           )
         }
+        for (const [index, category] of (pack.menuCategories || []).entries()) {
+          await connection.execute(
+            `
+              INSERT INTO menu_categories (
+                id, package_id, name, description, image, selection_mode, sort_order
+              )
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `,
+            [
+              category.id,
+              pack.id,
+              category.name,
+              category.description || '',
+              category.image || pack.image,
+              category.selectionMode || 'optional',
+              Number.isFinite(Number(category.sortOrder)) ? Number(category.sortOrder) : index,
+            ],
+          )
+        }
+        for (const [index, item] of (pack.menuItems || []).entries()) {
+          await connection.execute(
+            `
+              INSERT INTO menu_items (
+                id, package_id, category_id, name, description, price_per_guest,
+                vegetarian, spice_level, included_by_default, sort_order
+              )
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+            [
+              item.id,
+              pack.id,
+              item.categoryId,
+              item.name,
+              item.description || '',
+              asNumber(item.pricePerGuest),
+              item.vegetarian === false ? 0 : 1,
+              item.spiceLevel || 'mild',
+              item.includedByDefault ? 1 : 0,
+              Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index,
+            ],
+          )
+        }
       }
     }
 
@@ -1054,9 +1198,9 @@ const saveRelationalState = async (pool, state, options = {}) => {
         `
           INSERT INTO bookings (
             id, customer_id, vendor_id, package_id, customer_name, event_type, event_date, guests,
-            note, amount, deposit, payment_choice, status, created_at
+            base_price_per_guest, menu_price_per_guest, note, amount, deposit, payment_choice, status, created_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           booking.id,
@@ -1067,6 +1211,8 @@ const saveRelationalState = async (pool, state, options = {}) => {
           booking.eventType,
           dateOnly(booking.date),
           booking.guests,
+          asNumber(booking.basePricePerGuest),
+          asNumber(booking.menuPricePerGuest),
           booking.note || '',
           booking.amount,
           booking.deposit,
@@ -1079,6 +1225,23 @@ const saveRelationalState = async (pool, state, options = {}) => {
         await connection.execute(
           'INSERT INTO booking_add_ons (booking_id, add_on_id) VALUES (?, ?)',
           [booking.id, addOnId],
+        )
+      }
+      for (const item of booking.menuSelections || []) {
+        await connection.execute(
+          `
+            INSERT INTO booking_menu_items (
+              booking_id, menu_item_id, item_name, category_name, price_per_guest
+            )
+            VALUES (?, ?, ?, ?, ?)
+          `,
+          [
+            booking.id,
+            item.menuItemId,
+            item.name,
+            item.categoryName || 'Menu',
+            asNumber(item.pricePerGuest),
+          ],
         )
       }
       for (const [index, item] of (booking.timeline || []).entries()) {
